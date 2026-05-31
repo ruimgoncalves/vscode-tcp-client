@@ -23,5 +23,16 @@ jobs:
       - run: npm ci
       - run: npm run compile --if-present
 
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update package.json version
+        run: |
+          npm version ${{ steps.version.outputs.version }} --no-git-tag-version
+
       - name: Publish to VS Code Marketplace
         run: npx @vscode/vsce publish -p "${{ secrets.VSCE_PAT }}"
