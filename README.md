@@ -1,74 +1,81 @@
-# TCP Client — VS Code Extension
+# TCP Client for VS Code
 
-Send and receive raw TCP messages from a VS Code panel, with escape-sequence support for binary data.
+**Talk to any TCP server without leaving your editor.**
+
+TCP Client brings a lightweight, full-featured TCP socket client straight into VS Code — no terminal, no external tools, no context switching. Connect to a server, send raw or binary messages, and watch responses in a clean, timestamped log. Perfect for debugging network services, testing custom protocols, or poking at IoT devices.
+
+![TCP Client in action](https://github.com/ruimgoncalves/vscode-tcp-client/raw/main/screenshot.png)
+
+---
 
 ## Features
 
-- **Connect / disconnect** to any `host:port` TCP server
-- **Connection state** shown on the button (grey → orange → green/red)
-- **Response time** displayed for each received message
-- **Text encoding** selector: UTF-8, ASCII, Latin-1, UTF-16 LE
-- **Escape sequences** in the message textarea:
-  | Sequence | Meaning |
-  |----------|---------|
-  | `\xHH`   | Raw byte `0xHH` (e.g. `\xFF`) |
-  | `\n`     | Newline (0x0A) |
-  | `\r`     | Carriage return (0x0D) |
-  | `\t`     | Tab (0x09) |
-  | `\\`     | Literal backslash |
-  | `\0`     | Null byte (0x00) |
-- **Persistent state** – server address, encoding and draft message survive panel hide/show
-- **Ctrl+Enter** to send
+### 🔌 Connect to Any TCP Server
+Just enter `host:port` and hit Connect. The status dot tells you everything at a glance — grey when idle, amber while connecting, green when live.
+
+### ⌨️ Send Any Message
+- Plain text in **UTF-8, ASCII, Latin-1, or UTF-16 LE**
+- **Binary support** via escape sequences (`\xFF`, `\x00`, `\n`, `\r`, `\t`, `\\`)
+- Press **Ctrl+Enter** to send without touching the mouse
+
+### 📋 Response Log
+Every response is logged with a **timestamp** and **response time in milliseconds** — useful for benchmarking or spotting timeouts.
+
+### 💾 Remembers Your State
+Server address, encoding, and draft message are **automatically saved** between sessions. Close the panel, reopen VS Code — your context is still there.
+
+---
 
 ## Install
 
-### From source (development)
+### From the VS Code Marketplace *(coming soon)*
+Search for **"TCP Client"** in the Extensions view and click Install.
 
+### From a `.vsix` package
+Download the latest `.vsix` from the [Releases](https://github.com/ruimgoncalves/vscode-tcp-client/releases) page, then:
+**Extensions → ⋯ → Install from VSIX…**
+
+### From source
 ```bash
+git clone https://github.com/ruimgoncalves/vscode-tcp-client.git
 cd vscode-tcp-client
 npm install
 npm run compile
-# Press F5 in VS Code to launch the Extension Development Host
+# Press F5 to launch the Extension Development Host
 ```
 
-### Build a .vsix package
+---
 
-```bash
-npm install
-npm run package        # produces vscode-tcp-client-0.1.0.vsix
-```
+## How to Use
 
-Then in VS Code: **Extensions → ⋯ → Install from VSIX…**
+1. Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) → **TCP Client: Open Panel**
+2. Enter your server address (e.g. `localhost:9000`) and click **Connect**
+3. Type a message — use escape sequences for binary data
+4. Press **Send** or **Ctrl+Enter**
+5. Watch responses appear in the log with timestamps and response times
 
-## Usage
+### Escape Sequences
 
-1. Open the panel: **Command Palette → TCP Client: Open Panel**
-2. Enter `host:port` (default `localhost:9000`)
-3. Click **Connect**
-4. Type a message (use escape sequences for binary data), press **Send** or Ctrl+Enter
-5. Responses appear in the log with timestamps and response times
+| Sequence | Meaning |
+|----------|---------|
+| `\xHH`   | Raw byte (e.g. `\xFF`) |
+| `\n`     | Newline (0x0A) |
+| `\r`     | Carriage return (0x0D) |
+| `\t`     | Tab (0x09) |
+| `\\`     | Literal backslash |
+| `\0`     | Null byte (0x00) |
 
-## Running Tests
+---
 
-```bash
-npm test
-```
+## Use Cases
 
-Tests cover `MessageEncoder` (unit) and `TcpClient` (integration with a loopback server).
+- **Debug network services** — test your API server or database directly
+- **IoT & embedded** — send crafted binary packets to devices
+- **Protocol exploration** — experiment with custom or undocumented protocols
+- **Performance testing** — measure round-trip latency with built-in response timers
 
-## Project Layout
+---
 
-```
-src/
-  extension.ts          Entry point
-  TcpPanel.ts           WebviewPanel + HTML/CSS/JS
-  TcpClient.ts          TCP socket wrapper (Node net module)
-  MessageEncoder.ts     Escape-sequence parser & byte formatter
-  test/
-    runTest.ts          VS Code test runner launcher
-    suite/
-      index.ts          Mocha suite loader
-      MessageEncoder.test.ts
-      TcpClient.test.ts
-      extension.test.ts
-```
+## License
+
+MIT
