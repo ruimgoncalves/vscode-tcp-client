@@ -24,23 +24,6 @@ Server address, encoding, and draft message survive panel close/reopen and VS Co
 
 ---
 
-## Install
-
-### From a `.vsix` package
-Download the latest `.vsix` from the [Releases](https://github.com/ruimgoncalves/vscode-tcp-client/releases) page, then:
-**Extensions → ⋯ → Install from VSIX…**
-
-### From source
-```bash
-git clone https://github.com/ruimgoncalves/vscode-tcp-client.git
-cd vscode-tcp-client
-npm install
-npm run compile
-# Press F5 to launch the Extension Development Host
-```
-
----
-
 ## How to Use
 
 1. Open the Command Palette → **TCP Client: Open Panel**
