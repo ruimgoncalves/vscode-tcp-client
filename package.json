@@ -16,7 +16,28 @@
         "title": "TCP Client: Open Panel",
         "icon": "$(plug)"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "TCP Client",
+      "properties": {
+        "tcpClient.envelopes.custom": {
+          "type": "array",
+          "default": [],
+          "description": "User-defined message envelopes. Each entry: { id, label, prefix, suffix, segmentSeparator } where prefix/suffix/segmentSeparator are escape-sequence strings (\\xHH, \\n, \\r, \\t, \\\\, \\0).",
+          "items": {
+            "type": "object",
+            "required": ["id", "label"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "prefix": { "type": "string", "default": "" },
+              "suffix": { "type": "string", "default": "" },
+              "segmentSeparator": { "type": "string", "default": "" }
+            }
+          }
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
