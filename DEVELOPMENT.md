@@ -91,6 +91,9 @@ The extension is intentionally small. The key files:
   helpers (`get`, `getAll`, `resolve`, …)
 - `src/envelopes/builtins.ts` — registers the three built-in envelopes
   (`none`, `hl7-mllp`, `hl7-llp`) on import
+- `src/variables/Variables.ts` — variable registry, `substitute()` function,
+  `formatTimestamp()` for the built-in `timestamp`
+- `src/variables/builtins.ts` — registers the `timestamp` built-in on import
 - `src/test/suite/` — mocha tests, one file per source module
 
 ### Adding a new built-in envelope
@@ -192,6 +195,56 @@ Every custom envelope accepts the full `EnvelopeSpec` shape: `prefix`,
 payload once — identical to v0.2.0 behavior. When at least one is
 non-empty, `wrap()` splits on `\n` and wraps every line individually.
 See the "Line prefix and suffix" section above for the full semantics.
+
+### Variables
+
+The variables layer sits **before** `wrap()` in the send pipeline, so
+substitution happens before encoding and framing. The pipeline is:
+message text → `substitute()` → `encodeMessage()` → `wrap()` → socket.
+
+A `Variable` is `{ name, value, format?, builtin }`. Built-in variables
+are always present and not deletable; user variables come from
+`tcpClient.variables.custom` in settings.json.
+
+`substitute(text, variables)` uses a single-pass regex `/\{\{(name)\}\}/g`
+to replace references with values. Unknown names are left in place and
+a `console.warn` is emitted (once per reference). The substitution is
+single-pass: substituted output is NOT re-scanned, so a custom variable
+whose value contains `{{x}}` is treated as literal text.
+
+The `timestamp` built-in's format is re-read from
+`tcpClient.variables.timestampFormat` on every `substitute()` call, so
+changes in the Settings UI or settings.json take effect immediately for
+the next message — no re-registration needed.
+
+#### Escape interaction
+
+The `MessageEncoder` adds `\{` and `\}` as literal-brace escapes. This
+lets the user send a literal `{{name}}` in the message text by writing
+`\{\{name\}\}` — the encoder converts each `\{` to a literal `{` byte,
+so substitute sees the text `{{name}}` and (assuming no `name`
+variable is defined) leaves it as-is.
+
+The substitute regex doesn't see the user's escape syntax — it only
+sees the post-encoded string. So `\{\{name\}\}` after encode becomes
+`{{name}}`, which substitute treats as a reference (and falls through
+unchanged if unknown). The escape mechanism and the substitution
+mechanism layer cleanly.
+
+#### Adding a new built-in variable
+
+1. Edit `src/variables/builtins.ts` and call `_registerBuiltin({...})`
+   with a `Variable` value. Set `builtin: true` so the UI treats it as
+   non-deletable.
+2. If the variable is computed (like `timestamp`), it needs a custom
+   substitution rule. The current `substitute()` implementation only
+   knows about `timestamp` — to add e.g. `uuid`, you'd extend the
+   function to special-case the name and produce a fresh value each
+   call.
+3. Add a test case in `src/test/suite/Variables.test.ts` covering the
+   new variable's substitution behavior.
+4. Update the built-ins table in `README.md` (add a row to the Variables
+   section).
 
 ---
 

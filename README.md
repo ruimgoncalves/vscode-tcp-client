@@ -16,6 +16,11 @@ Enter `host:port`, hit Connect. A status dot shows connection state at a glance 
 **⌨️ Send any message**
 Plain text in UTF-8, ASCII, Latin-1, or UTF-16 LE. Binary data via escape sequences: `\xFF`, `\x00`, `\n`, `\r`, `\t`, `\\`. Press **Ctrl+Enter** to send.
 
+**🔤 Variable interpolation**
+Reference `{{name}}` values in the message area — built-in `{{timestamp}}`
+and your own user-defined variables. Live-updating timestamp, user
+variables editable in the Variables section, format configurable.
+
 **📋 Timestamped response log**
 Every response is logged with a precise timestamp and round-trip response time in milliseconds.
 
@@ -46,6 +51,79 @@ Wrap outgoing messages with configurable prefix/suffix bytes — pick a built-in
 | `\t`     | Tab (0x09) |
 | `\\`     | Literal backslash |
 | `\0`     | Null byte (0x00) |
+| `\{`     | Literal `{`        |
+| `\}`     | Literal `}`        |
+
+### Variables
+
+Insert computed values into outgoing messages with `{{name}}` references.
+The text is resolved **before** encoding and framing, so the response log
+shows the actual bytes that hit the socket.
+
+#### Built-in: timestamp
+
+`{{timestamp}}` inserts the current time, formatted with the pattern in
+the **Format** input at the top of the Variables section. Default: ISO 8601
+(`YYYY-MM-DDTHH:mm:ss.sssZ`). Supported tokens:
+
+| Token | Meaning           |
+|-------|-------------------|
+| YYYY  | Year (4 digits)   |
+| MM    | Month (01-12)     |
+| DD    | Day (01-31)       |
+| HH    | Hour (00-23)      |
+| mm    | Minute (00-59)    |
+| ss    | Second (00-59)    |
+| sss   | Millisecond       |
+| Z     | `Z` (UTC marker)  |
+
+Other characters in the format string are treated as literals (so
+`YYYY-MM-DD HH:mm:ss` produces `2026-07-05 14:23:45`).
+
+#### User variables
+
+Define your own `{{name}}` references in the Variables section: enter a
+name and value, click Add. Use them anywhere in the message area, e.g.
+`Hello {{user.name}}, status from {{host}}`.
+
+User variables are stored in `settings.json` under
+`tcpClient.variables.custom` (as an array of `{name, value}` entries) and
+also editable directly in the JSON if you prefer. The format of the
+built-in `timestamp` lives in `tcpClient.variables.timestampFormat`.
+
+**Example: variable + HL7 MLLP envelope**
+
+```json
+{
+  "tcpClient.variables.custom": [
+    { "name": "user.name", "value": "ryu" },
+    { "name": "session.id", "value": "abc-123" }
+  ],
+  "tcpClient.variables.timestampFormat": "YYYY-MM-DDTHH:mm:ss.sssZ"
+}
+```
+
+Then in the panel:
+
+- Type message: `MSH|^~\&|SENDER|...|MSG_{{session.id}}|...|||{{timestamp}}||`
+- Envelope: `HL7 v2 (MLLP)`
+
+The bytes that go to the socket have `{{session.id}}` → `abc-123` and
+`{{timestamp}}` → the formatted current time, then the whole thing gets
+the MLLP VT/FS+CR framing.
+
+#### Unknown variables
+
+If a message references `{{name}}` that is not defined, the reference is
+left in the output and a warning is logged in the developer console. No
+send is blocked.
+
+#### Sending literal `{{name}}` in a message
+
+To include literal `{{` and `}}` characters in a message (not as variable
+references), escape each brace with a backslash in the encoder syntax:
+`\{` produces a literal `{`, `\}` produces a literal `}`. So `\{\{name\}\}`
+in the message area sends the literal text `{{name}}`.
 
 ### Envelopes
 
