@@ -79,6 +79,11 @@ Define your own envelopes in `settings.json` under
 - `segmentSeparator` — informational; describes the byte that separates
   segments inside the payload. Not transformed by `wrap` in v1 — you
   provide the payload text exactly as you want it transmitted.
+- `lineMode` — `"none"` (default) wraps the whole payload once; `"each-line"`
+  splits on `lineSeparator` and wraps each chunk independently (use for
+  protocols that frame every line).
+- `lineSeparator` — escape-sequence string used to split the payload when
+  `lineMode` is `"each-line"`. Defaults to `"\n"`.
 
 **Example: an HL7 v2 MLLP envelope**
 
@@ -110,6 +115,29 @@ Define your own envelopes in `settings.json` under
   ]
 }
 ```
+
+**Example: per-line STX/ETX framing (NRPE-style)**
+
+```json
+{
+  "tcpClient.envelopes.custom": [
+    {
+      "id": "stx-etx-line",
+      "label": "STX/ETX per line",
+      "prefix": "\\x02",
+      "suffix": "\\x03",
+      "lineMode": "each-line",
+      "lineSeparator": "\\n"
+    }
+  ]
+}
+```
+
+With `lineMode: "each-line"`, the payload is split on `lineSeparator` and
+each chunk is wrapped independently. Use this when the protocol frames
+every line (e.g. NRPE, line-oriented logging) instead of a single
+message. `lineSeparator` defaults to `\n`; set it to `\r` for CR-delimited
+protocols like HL7.
 
 Custom envelopes appear in the **Envelope** dropdown alongside the built-ins.
 The selection is persisted per-panel along with the rest of the form state.

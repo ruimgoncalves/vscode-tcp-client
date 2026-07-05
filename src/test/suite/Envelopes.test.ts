@@ -47,6 +47,8 @@ function spec(partial: Partial<EnvelopeSpec>): EnvelopeSpec {
     prefix: '',
     suffix: '',
     segmentSeparator: '',
+    lineMode: 'none',
+    lineSeparator: '\\n',
     ...partial,
   };
 }
@@ -116,7 +118,7 @@ suite('Envelope – registry (register / get / list)', () => {
     const env: Envelope = {
       id: 'custom-1',
       label: 'Custom One',
-      spec: { prefix: '\\xAA', suffix: '\\xBB', segmentSeparator: '' },
+      spec: { prefix: '\\xAA', suffix: '\\xBB', segmentSeparator: '', lineMode: 'none', lineSeparator: '\\n' },
     };
     register(env);
     const got = get('custom-1');
@@ -284,5 +286,101 @@ suite('Envelope – getCustom (reads VS Code configuration)', () => {
     assert.ok(builtinIds.includes('hl7-mllp'));
     // Custom comes after
     assert.ok(customIds.includes('cust-1'));
+  });
+});
+
+suite('Envelope – wrap with lineMode', () => {
+
+  test('lineMode=none is identical to wrapping once (default behavior)', () => {
+    const payload = Buffer.from('line1\nline2\nline3');
+    const out = wrap(payload, spec({ prefix: 'P', suffix: 'S', lineMode: 'none' }));
+    assert.deepStrictEqual([...out], [0x50, ...payload, 0x53]);
+  });
+
+  test('lineMode=each-line wraps each chunk independently on \\n separator', () => {
+    const payload = Buffer.from('line1\nline2\nline3');
+    const out = wrap(payload, spec({
+      prefix: 'P',
+      suffix: 'S',
+      lineMode: 'each-line',
+      lineSeparator: '\\n',
+    }));
+    // Each "lineN" wrapped as P+lineN+S, joined by the literal \n separator.
+    // P='P'=0x50, S='S'=0x53, sep=\n=0x0A
+    assert.deepStrictEqual(
+      [...out],
+      [0x50, 0x6c, 0x69, 0x6e, 0x65, 0x31, 0x53, 0x0A,
+              0x50, 0x6c, 0x69, 0x6e, 0x65, 0x32, 0x53, 0x0A,
+              0x50, 0x6c, 0x69, 0x6e, 0x65, 0x33, 0x53]
+    );
+  });
+
+  test('lineMode=each-line respects the configured lineSeparator (CR example)', () => {
+    // HL7 segments are CR-delimited; a per-line NRPE-style wrap should use
+    // \\r as the line separator, not \\n.
+    const payload = Buffer.from('MSH|...|...|...\rPID|...|...|...');
+    const out = wrap(payload, spec({
+      prefix: '\\x02',          // STX
+      suffix: '\\x03',          // ETX
+      lineMode: 'each-line',
+      lineSeparator: '\\r',
+    }));
+    // STX + MSH|...|...|... + ETX + CR + STX + PID|...|...|... + ETX
+    // STX=0x02, ETX=0x03, CR=0x0D
+    const msh = [...Buffer.from('MSH|...|...|...')];
+    const pid = [...Buffer.from('PID|...|...|...')];
+    assert.deepStrictEqual(
+      [...out],
+      [0x02, ...msh, 0x03, 0x0D, 0x02, ...pid, 0x03]
+    );
+  });
+
+  test('lineMode=each-line with single-line payload (no separator in input)', () => {
+    const payload = Buffer.from('only-line');
+    const out = wrap(payload, spec({
+      prefix: 'A',
+      suffix: 'Z',
+      lineMode: 'each-line',
+      lineSeparator: '\\n',
+    }));
+    assert.deepStrictEqual([...out], [0x41, ...payload, 0x5A]);
+  });
+
+  test('lineMode=each-line with empty payload returns just prefix+suffix', () => {
+    const out = wrap(Buffer.alloc(0), spec({
+      prefix: 'A',
+      suffix: 'Z',
+      lineMode: 'each-line',
+      lineSeparator: '\\n',
+    }));
+    assert.deepStrictEqual([...out], [0x41, 0x5A]);
+  });
+
+  test('lineMode=each-line with empty lineSeparator falls back to single wrap', () => {
+    // Defensive: a misconfigured empty separator must NOT loop forever.
+    const payload = Buffer.from('a\nb\nc');
+    const out = wrap(payload, spec({
+      prefix: 'P',
+      suffix: 'S',
+      lineMode: 'each-line',
+      lineSeparator: '',
+    }));
+    assert.deepStrictEqual([...out], [0x50, ...payload, 0x53]);
+  });
+
+  test('lineMode=each-line handles leading and trailing separators', () => {
+    const payload = Buffer.from('\nline1\n');
+    const out = wrap(payload, spec({
+      prefix: 'P',
+      suffix: 'S',
+      lineMode: 'each-line',
+      lineSeparator: '\\n',
+    }));
+    // Empty leading chunk, line1, empty trailing chunk — empty chunks still
+    // get wrapped (P+S).
+    assert.deepStrictEqual(
+      [...out],
+      [0x50, 0x53, 0x0A, 0x50, ...Buffer.from('line1'), 0x53, 0x0A, 0x50, 0x53]
+    );
   });
 });
