@@ -91,6 +91,11 @@ The extension is intentionally small. The key files:
   helpers (`get`, `getAll`, `resolve`, …)
 - `src/envelopes/builtins.ts` — registers the three built-in envelopes
   (`none`, `hl7-mllp`, `hl7-llp`) on import
+- `src/variables/Variables.ts` — variable registry, `substitute()` function
+  (v2: optional pipe suffix), `formatTimestamp()` for `{{timestamp}}`,
+  built-in dispatch for `{{seq}}` and `{{uuid}}`
+- `src/variables/builtins.ts` — registers the `timestamp`, `seq`, and
+  `uuid` built-ins on import
 - `src/test/suite/` — mocha tests, one file per source module
 
 ### Adding a new built-in envelope
@@ -192,6 +197,98 @@ Every custom envelope accepts the full `EnvelopeSpec` shape: `prefix`,
 payload once — identical to v0.2.0 behavior. When at least one is
 non-empty, `wrap()` splits on `\n` and wraps every line individually.
 See the "Line prefix and suffix" section above for the full semantics.
+
+### Variables
+
+The variables layer sits **before** `wrap()` in the send pipeline, so
+substitution happens before encoding and framing. The pipeline is:
+message text → `substitute()` → `encodeMessage()` → `wrap()` → socket.
+
+A `Variable` is `{ name, value, format?, builtin }`. Built-in variables
+are always present and not deletable; user variables come from
+`tcpClient.variables.custom` in settings.json.
+
+`substitute(text, variables)` uses `/\{\{([a-zA-Z_][a-zA-Z0-9_.-]*)(?:\|([^}]*))?\}\}/g`
+to match both `{{name}}` and `{{name|pipe}}`. The pipe group is
+undefined when no pipe is present. Unknown names are left in place (pipe
+and all) and a `console.warn` is emitted (once per reference). The
+substitution is single-pass: substituted output is NOT re-scanned, so a
+custom variable whose value contains `{{x}}` is treated as literal text.
+
+For the built-in `timestamp`, a non-empty pipe overrides the live
+`tcpClient.variables.timestampFormat` setting; an empty pipe (or no
+pipe) reads the setting. For `seq`, the panel passes `state.seq` and
+the function returns it directly; pipe is silently ignored. For
+`uuid`, the function calls `crypto.randomUUID()` (Node 14.17+);
+pipe is silently ignored. For user-defined variables, the pipe is
+silently stripped and the variable's literal value is substituted.
+
+The `timestamp` built-in's format is re-read from
+`tcpClient.variables.timestampFormat` on every `substitute()` call, so
+changes in the Settings UI or settings.json take effect immediately for
+the next message — no re-registration needed.
+
+#### Escape interaction
+
+The `MessageEncoder` adds `\{` and `\}` as literal-brace escapes. This
+lets the user send a literal `{{name}}` in the message text by writing
+`\{\{name\}\}` — the encoder converts each `\{` to a literal `{` byte,
+so substitute sees the text `{{name}}` and (assuming no `name`
+variable is defined) leaves it as-is.
+
+The substitute regex doesn't see the user's escape syntax — it only
+sees the post-encoded string. So `\{\{name\}\}` after encode becomes
+`{{name}}`, which substitute treats as a reference (and falls through
+unchanged if unknown). The escape mechanism and the substitution
+mechanism layer cleanly.
+
+#### seq counter
+
+The `{{seq}}` built-in is panel-managed, not model-managed. The panel
+holds a private `_seq` field initialized to 1 when the panel opens.
+On each successful `tcpClient.send()` call, the panel increments
+`_seq` by 1. The value passed into `substitute()` is the current
+value (before increment), so the first message gets seq=1, the
+second gets seq=2, and so on.
+
+The counter is per-panel-instance. Two panels have independent
+counters. Closing the panel and reopening resets the counter to 1
+(new session).
+
+#### Persistent message
+
+The webview's draft message is persisted via
+`extensionContext.globalState` (per VS Code install), not
+`vscode.setState`. `setState` is webview-scoped and dies with the
+webview context on VS Code restart; `globalState` survives. Other
+fields (server, encoding, envelope) stay on `setState` since they
+are session preferences, not draft content.
+
+When the panel opens, it asks the extension for the persisted
+message via a `getPersistedMessage` postMessage and restores the
+value into the message textarea. On every input change, the
+webview posts a `persistMessage` and the extension writes it back
+to globalState (fire-and-forget; no debounce needed since
+globalState.update is cheap and in-memory).
+
+#### Adding a new built-in variable
+
+1. Edit `src/variables/builtins.ts` and call `_registerBuiltin({...})`
+   with a `Variable` value. Set `builtin: true` so the UI treats it as
+   non-deletable.
+2. If the variable is computed (like `timestamp`), it needs a custom
+   substitution rule. The current `substitute()` implementation
+   special-cases `timestamp`, `seq`, and `uuid` — to add e.g.
+   `{{hostname}}`, extend the function with another `if` branch.
+3. If the new variable supports a per-message format override (like
+   `timestamp`), extend the `substitute()` dispatch to check for the
+   variable's name and apply the pipe. Otherwise, return the value
+   directly with the pipe silently ignored (matches the current
+   `seq`/`uuid`/user-var behavior).
+4. Add a test case in `src/test/suite/Variables.test.ts` covering the
+   new variable's substitution behavior.
+5. Update the built-ins table in `README.md` (add a row to the Variables
+   section).
 
 ---
 

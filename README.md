@@ -16,6 +16,12 @@ Enter `host:port`, hit Connect. A status dot shows connection state at a glance 
 **⌨️ Send any message**
 Plain text in UTF-8, ASCII, Latin-1, or UTF-16 LE. Binary data via escape sequences: `\xFF`, `\x00`, `\n`, `\r`, `\t`, `\\`. Press **Ctrl+Enter** to send.
 
+**🔤 Variable interpolation**
+Reference `{{name}}` values in the message area — built-in `{{timestamp}}`,
+`{{seq}}`, `{{uuid}}`, plus your own user-defined variables. Format
+timestamps inline with `{{timestamp|FORMAT}}`. User variables editable
+in the Variables section.
+
 **📋 Timestamped response log**
 Every response is logged with a precise timestamp and round-trip response time in milliseconds.
 
@@ -46,6 +52,86 @@ Wrap outgoing messages with configurable prefix/suffix bytes — pick a built-in
 | `\t`     | Tab (0x09) |
 | `\\`     | Literal backslash |
 | `\0`     | Null byte (0x00) |
+| `\{`     | Literal `{`        |
+| `\}`     | Literal `}`        |
+
+### Variables
+
+Insert computed values into outgoing messages with `{{name}}` references.
+The text is resolved **before** encoding and framing, so the response log
+shows the actual bytes that hit the socket.
+
+#### Built-in variables
+
+Three built-ins are always present and cannot be deleted:
+
+| Name         | Value                                              |
+|--------------|----------------------------------------------------|
+| `{{timestamp}}` | Current UTC time (default format from settings)   |
+| `{{seq}}`       | Per-session counter, starts at 1, increments on each send |
+| `{{uuid}}`      | Fresh RFC 4122 v4 UUID per substitution            |
+
+**Format override for `{{timestamp}}`:** use the pipe syntax — `{{timestamp|FORMAT}}` renders the time with FORMAT instead of the default. Available tokens: YYYY, MM, DD, HH, mm, ss, sss, Z (literal UTC marker), X (Unix epoch seconds), x (Unix epoch milliseconds).
+
+#### Pipe syntax
+
+`{{name|format}}` overrides the format for the built-in `{{timestamp}}`.
+The pipe is silently ignored for `{{seq}}`, `{{uuid}}`, and user-defined
+variables (treated as noise).
+
+Examples:
+
+- `{{timestamp|YYYY-MM-DD}}` → `2026-07-05`
+- `{{timestamp|HH:mm:ss}}` → `13:45:23`
+- `{{timestamp|X}}` → `1783259123` (epoch seconds)
+- `{{seq|anything}}` → just `1` (pipe ignored)
+- `{{user.name|ignored}}` → just `ryu` (pipe ignored)
+
+The default format when no pipe is present is `tcpClient.variables.timestampFormat`
+in settings.json (default ISO 8601).
+
+#### User variables
+
+Define your own `{{name}}` references in the Variables section: enter a
+name and value, click Add. Use them anywhere in the message area, e.g.
+`Hello {{user.name}}, status from {{host}}`.
+
+User variables are stored in `settings.json` under
+`tcpClient.variables.custom` (as an array of `{name, value}` entries) and
+also editable directly in the JSON if you prefer. The format of the
+built-in `timestamp` lives in `tcpClient.variables.timestampFormat`.
+
+**Example: variable + HL7 MLLP envelope**
+
+```json
+{
+  "tcpClient.variables.custom": [
+    { "name": "user.name", "value": "ryu" },
+    { "name": "session.id", "value": "abc-123" }
+  ],
+  "tcpClient.variables.timestampFormat": "YYYY-MM-DDTHH:mm:ss.sssZ"
+}
+```
+
+Then in the panel:
+
+- Type message: `MSH|^~\&|SENDER|...|MSG_{{session.id}}|...|||{{timestamp}}||`
+- Envelope: `HL7 v2 (MLLP)`
+
+The bytes that go to the socket have `{{session.id}}` → `abc-123` and
+`{{timestamp}}` → the formatted current time, then the whole thing gets
+the MLLP VT/FS+CR framing.
+
+#### Unknown variables
+
+If a message references `{{name}}` or `{{name|anything}}` that is not defined, the reference is left in the output (including the pipe, if any) and a warning is logged in the developer console. No send is blocked.
+
+#### Sending literal `{{name}}` in a message
+
+To include literal `{{` and `}}` characters in a message (not as variable
+references), escape each brace with a backslash in the encoder syntax:
+`\{` produces a literal `{`, `\}` produces a literal `}`. So `\{\{name\}\}`
+in the message area sends the literal text `{{name}}`.
 
 ### Envelopes
 
