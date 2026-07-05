@@ -834,6 +834,7 @@ export class TcpPanel {
         row.appendChild(nm); row.appendChild(vv); row.appendChild(del);
         varsBodyEl.appendChild(row);
       }
+    }
   }
 
   // -----------------------------------------------------------------
