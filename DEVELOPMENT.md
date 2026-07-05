@@ -76,6 +76,48 @@ npm run compile
 
 ---
 
+## Architecture
+
+The extension is intentionally small. The key files:
+
+- `src/extension.ts` — entry point, registers the `tcpClient.openPanel` command
+  and triggers built-in envelope registration
+- `src/TcpClient.ts` — thin `net.Socket` wrapper, `EventEmitter`-based
+- `src/TcpPanel.ts` — VS Code webview panel, owns a `TcpClient` and a
+  webview; renders the HTML
+- `src/MessageEncoder.ts` — escape-sequence parser used for both message
+  payloads and envelope prefix/suffix strings
+- `src/envelopes/Envelope.ts` — envelope registry, `wrap()` function, and
+  helpers (`get`, `getAll`, `resolve`, …)
+- `src/envelopes/builtins.ts` — registers the three built-in envelopes
+  (`none`, `hl7-mllp`, `hl7-llp`) on import
+- `src/test/suite/` — mocha tests, one file per source module
+
+### Adding a new built-in envelope
+
+1. Edit `src/envelopes/builtins.ts` and call `_registerBuiltin(...)` with
+   an `Envelope` value. Escape sequences in `prefix` / `suffix` use the
+   same syntax as the message area (`\xHH`, `\n`, `\r`, `\t`, `\\`, `\0`).
+2. Add a test case in `src/test/suite/Envelopes.test.ts` to confirm the
+   framing bytes are correct.
+3. Update the built-ins table in `README.md`.
+
+The `wrap()` function intentionally only adds `prefix` + `suffix`; it does
+not transform the payload. If you need to insert separators or otherwise
+mutate the user-typed text, do it in the webview or as a separate layer
+before `wrap()` runs.
+
+### Custom envelopes
+
+Custom envelopes are read from `vscode.workspace.getConfiguration('tcpClient')
+.get('envelopes.custom')` at panel creation time, plus on every
+`getEnvelopes` request from the webview. The schema is declared in
+`package.json` under `contributes.configuration` and is therefore editable
+via VS Code's Settings UI as well as `settings.json`. Adding a new custom
+envelope requires no code changes.
+
+---
+
 ## License
 
 MIT

@@ -22,15 +22,19 @@ Every response is logged with a precise timestamp and round-trip response time i
 **💾 Persistent state**
 Server address, encoding, and draft message survive panel close/reopen and VS Code restarts.
 
+**📨 Message envelopes**
+Wrap outgoing messages with configurable prefix/suffix bytes — pick a built-in (HL7 v2 MLLP framing, raw LLP) or define your own custom envelope in `settings.json`. No need to type framing bytes manually.
+
 ---
 
 ## How to Use
 
 1. Open the Command Palette → **TCP Client: Open Panel**
 2. Enter your server address (e.g. `localhost:9000`) and click **Connect**
-3. Type a message — use escape sequences for binary data
-4. Press **Send** or **Ctrl+Enter**
-5. Watch responses appear in the log with timestamps and response times
+3. Choose an **Envelope** (default: *None / raw*)
+4. Type a message — use escape sequences for binary data
+5. Press **Send** or **Ctrl+Enter**
+6. Watch responses appear in the log with timestamps and response times
 
 ### Escape Sequences
 
@@ -42,6 +46,73 @@ Server address, encoding, and draft message survive panel close/reopen and VS Co
 | `\t`     | Tab (0x09) |
 | `\\`     | Literal backslash |
 | `\0`     | Null byte (0x00) |
+
+### Envelopes
+
+An **envelope** wraps your message with configurable prefix and suffix bytes
+before it is written to the socket. This is useful for protocols that have a
+well-known start and end marker (like HL7 v2 with MLLP framing).
+
+Select the envelope from the **Envelope** dropdown in the panel. The wrapping
+happens automatically — you type only the payload.
+
+#### Built-in envelopes
+
+| Envelope           | Prefix     | Suffix       | Use case                                  |
+|--------------------|------------|--------------|-------------------------------------------|
+| *None (raw)*       | *(none)*   | *(none)*     | Plain TCP — no framing                    |
+| *HL7 v2 (MLLP)*    | `\x0B` (VT)| `\x1C\r`     | HL7 v2 over MLLP-framed TCP               |
+| *HL7 v2 (LLP)*     | *(none)*   | `\x1C\r`     | HL7 v2 with LLP end marker but no start   |
+
+The escape sequences in the prefix/suffix columns above use the same syntax as
+the message area (`\xHH`, `\n`, `\r`, `\t`, `\\`, `\0`).
+
+#### Custom envelopes
+
+Define your own envelopes in `settings.json` under
+`tcpClient.envelopes.custom`. Each entry has:
+
+- `id` *(required)* — a unique identifier for the envelope
+- `label` *(required)* — a human-readable label shown in the dropdown
+- `prefix` — bytes to prepend (escape-sequence string, default `""`)
+- `suffix` — bytes to append (escape-sequence string, default `""`)
+- `segmentSeparator` — informational; describes the byte that separates
+  segments inside the payload. Not transformed by `wrap` in v1 — you
+  provide the payload text exactly as you want it transmitted.
+
+**Example: an HL7 v2 MLLP envelope**
+
+```json
+{
+  "tcpClient.envelopes.custom": [
+    {
+      "id": "hl7-mllp-custom",
+      "label": "HL7 v2 MLLP (custom)",
+      "prefix": "\\x0B",
+      "suffix": "\\x1C\\r",
+      "segmentSeparator": "\\r"
+    }
+  ]
+}
+```
+
+**Example: STX/ETX framed protocol**
+
+```json
+{
+  "tcpClient.envelopes.custom": [
+    {
+      "id": "stx-etx",
+      "label": "STX/ETX framed",
+      "prefix": "\\x02",
+      "suffix": "\\x03"
+    }
+  ]
+}
+```
+
+Custom envelopes appear in the **Envelope** dropdown alongside the built-ins.
+The selection is persisted per-panel along with the rest of the form state.
 
 ---
 
