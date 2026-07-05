@@ -1,4 +1,4 @@
-import { _registerBuiltin } from './Variables';
+import { _registerBuiltin, DEFAULT_TIMESTAMP_FORMAT } from './Variables';
 
 /**
  * Built-in variables. Imported from `extension.ts` at activation so the
@@ -18,6 +18,6 @@ import { _registerBuiltin } from './Variables';
 _registerBuiltin({
   name: 'timestamp',
   value: '',
-  format: 'YYYY-MM-DDTHH:mm:ss.sssZ',
+  format: DEFAULT_TIMESTAMP_FORMAT,
   builtin: true,
 });

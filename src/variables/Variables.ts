@@ -30,7 +30,7 @@ export type VariableDef = {
   value: string;
 };
 
-const DEFAULT_TIMESTAMP_FORMAT = 'YYYY-MM-DDTHH:mm:ss.sssZ';
+export const DEFAULT_TIMESTAMP_FORMAT = 'YYYY-MM-DDTHH:mm:ss.sssZ';
 
 // ---------------------------------------------------------------------------
 // Built-in registry
@@ -197,7 +197,10 @@ export function substitute(
       return match;
     }
     if (v.builtin && name === 'timestamp') {
-      return formatTimestamp(now, v.format ?? DEFAULT_TIMESTAMP_FORMAT);
+      const liveFormat = vscode.workspace
+        .getConfiguration('tcpClient')
+        .get<string>('variables.timestampFormat', v.format ?? DEFAULT_TIMESTAMP_FORMAT)
+      return formatTimestamp(now, liveFormat)
     }
     return v.value;
   });
