@@ -944,7 +944,7 @@ export class TcpPanel {
         }
         varsTable.appendChild(makeHelpRow(makeCode(name), desc2, (function (text) {
           return function () { pasteIntoMessage(text); closeHelp(); };
-        })(name));
+        })(name)));
       }
     }
   }
