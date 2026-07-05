@@ -58,11 +58,19 @@ export type EnvelopeDef = {
 /**
  * Wraps a payload buffer with the prefix and suffix described by `spec`.
  *
- * The current implementation only applies the outer `prefix` and `suffix`;
- * per-line `linePrefix`/`lineSuffix` are accepted on the spec for forward
- * compatibility but not yet applied. This is the back-compat shim for the
- * lineMode/lineSeparator → linePrefix/lineSuffix refactor; the per-line
- * wrap logic lands in a follow-up task.
+ * When both `linePrefix` and `lineSuffix` are empty strings (the default
+ * for all built-ins), the payload is wrapped once with the outer prefix
+ * and suffix — a fast path that keeps the behavior byte-identical to the
+ * previous single-wrap implementation.
+ *
+ * When at least one of `linePrefix` / `lineSuffix` is non-empty, the
+ * payload is split on `\n` (single byte 0x0A) and each line is wrapped
+ * individually with the line-level prefix/suffix. Empty lines (from
+ * leading, trailing, or consecutive `\n`s) are wrapped too, so a payload
+ * ending in `\n` produces a trailing empty line that is also wrapped
+ * — the right behavior for line-oriented protocols. Consecutive lines
+ * are rejoined with a single `\n` byte. The whole per-line result is
+ * then wrapped with the outer prefix and suffix.
  *
  * The `segmentSeparator` field of `spec` is informational; it is not
  * applied to the payload.
@@ -70,14 +78,30 @@ export type EnvelopeDef = {
 export function wrap(payload: Buffer, spec: EnvelopeSpec): Buffer {
   const prefixBytes = encodeMessage(spec.prefix, 'latin1');
   const suffixBytes = encodeMessage(spec.suffix, 'latin1');
+  const linePreBytes = encodeMessage(spec.linePrefix, 'latin1');
+  const lineSufBytes = encodeMessage(spec.lineSuffix, 'latin1');
 
-  // linePrefix / lineSuffix are accepted but not yet applied — see the
-  // docstring above. When both are empty this is the original single-wrap
-  // behavior.
-  void spec.linePrefix;
-  void spec.lineSuffix;
+  // Back-compat fast path: no per-line framing configured, wrap once.
+  if (linePreBytes.length === 0 && lineSufBytes.length === 0) {
+    return Buffer.concat([prefixBytes, payload, suffixBytes]);
+  }
 
-  return Buffer.concat([prefixBytes, payload, suffixBytes]);
+  // Per-line wrap. Split payload on \n (0x0A) and wrap each line,
+  // preserving empty lines from leading/trailing/consecutive separators.
+  const wrapped: Buffer[] = [prefixBytes];
+  let cursor = 0;
+  while (cursor <= payload.length) {
+    const nextSep = payload.indexOf(0x0a, cursor);
+    const lineEnd = nextSep === -1 ? payload.length : nextSep;
+    const line = payload.subarray(cursor, lineEnd);
+    wrapped.push(linePreBytes, line, lineSufBytes);
+    if (nextSep === -1) { break; }
+    wrapped.push(Buffer.from([0x0a]));
+    cursor = nextSep + 1;
+  }
+  wrapped.push(suffixBytes);
+
+  return Buffer.concat(wrapped);
 }
 
 // ---------------------------------------------------------------------------
