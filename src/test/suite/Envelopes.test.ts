@@ -288,3 +288,74 @@ suite('Envelope – getCustom (reads VS Code configuration)', () => {
     assert.ok(customIds.includes('cust-1'));
   });
 });
+
+suite('Envelope – wrap with linePrefix/lineSuffix', () => {
+
+  test('linePrefix=""/lineSuffix="" is identical to wrapping once (default)', () => {
+    const payload = Buffer.from('line1\nline2\nline3');
+    const out = wrap(payload, spec({ prefix: 'P', suffix: 'S' }));
+    // No line wrap; whole payload is wrapped once.
+    assert.deepStrictEqual([...out], [0x50, ...payload, 0x53]);
+  });
+
+  test('linePrefix prepends to every line', () => {
+    const payload = Buffer.from('line1\nline2\nline3');
+    const out = wrap(payload, spec({ linePrefix: '>' }));
+    // >line1\n>line2\n>line3
+    assert.deepStrictEqual(
+      [...out],
+      [0x3e, 0x6c, 0x69, 0x6e, 0x65, 0x31, 0x0a,
+              0x3e, 0x6c, 0x69, 0x6e, 0x65, 0x32, 0x0a,
+              0x3e, 0x6c, 0x69, 0x6e, 0x65, 0x33]
+    );
+  });
+
+  test('lineSuffix appends to every line', () => {
+    const payload = Buffer.from('a\nb');
+    const out = wrap(payload, spec({ lineSuffix: '\\r' }));
+    // a\r\nb\r
+    assert.deepStrictEqual([...out], [0x61, 0x0d, 0x0a, 0x62, 0x0d]);
+  });
+
+  test('combined linePrefix and lineSuffix on every line', () => {
+    const payload = Buffer.from('a\nb');
+    const out = wrap(payload, spec({ linePrefix: '[', lineSuffix: ']' }));
+    // [a]\n[b]
+    assert.deepStrictEqual([...out], [0x5b, 0x61, 0x5d, 0x0a, 0x5b, 0x62, 0x5d]);
+  });
+
+  test('empty payload returns just prefix+suffix', () => {
+    const out = wrap(Buffer.alloc(0), spec({ prefix: 'P', suffix: 'S' }));
+    assert.deepStrictEqual([...out], [0x50, 0x53]);
+  });
+
+  test('trailing newline produces a trailing wrapped empty line', () => {
+    const payload = Buffer.from('a\nb\n');
+    const out = wrap(payload, spec({ linePrefix: '>' }));
+    // >a\n>b\n>
+    assert.deepStrictEqual(
+      [...out],
+      [0x3e, 0x61, 0x0a, 0x3e, 0x62, 0x0a, 0x3e]
+    );
+  });
+
+  test('NRPE-style: combined outer STX/ETX and line prefix/suffix', () => {
+    const payload = Buffer.from('LOAD\nCPU\nMEM');
+    const out = wrap(payload, spec({
+      prefix: '\\x02',          // STX
+      suffix: '\\x03',          // ETX
+      linePrefix: '>',
+      lineSuffix: '<',
+    }));
+    // Outer STX wraps the whole message; per-line `>` / `<` between STX and
+    // ETX; lines rejoined with single LF (0x0a). So:
+    //   STX >LOAD< \n >CPU< \n >MEM< ETX
+    // STX=0x02, ETX=0x03, >=0x3e, <=0x3c, LF=0x0a
+    assert.deepStrictEqual(
+      [...out],
+      [0x02, 0x3e, 0x4c, 0x4f, 0x41, 0x44, 0x3c, 0x0a,
+             0x3e, 0x43, 0x50, 0x55, 0x3c, 0x0a,
+             0x3e, 0x4d, 0x45, 0x4d, 0x3c, 0x03]
+    );
+  });
+});

@@ -105,35 +105,66 @@ The extension is intentionally small. The key files:
 ### Wrap modes
 
 `wrap()` intentionally does not transform the payload bytes themselves — it
-only adds framing. Two modes are supported, selected by the envelope's
-`lineMode`:
+only adds framing. One mode is built in, plus an optional per-line
+extension:
 
-- **`'none'` (default)** — wrap the entire payload once with `prefix + payload + suffix`.
-  Used by HL7 v2 MLLP, STX/ETX, and most framed protocols.
-- **`'each-line'`** — split the payload on `lineSeparator` and wrap each chunk
-  independently. The separator itself is preserved between wrapped chunks.
-  Used for protocols that frame every line (NRPE, line-oriented log shipping, etc.).
+- **Default (single wrap)** — wrap the entire payload once with
+  `prefix + payload + suffix`. Used by HL7 v2 MLLP, STX/ETX, and most
+  framed protocols. This is the fast path inside `wrap()` and is
+  byte-identical to the v0.2.0 behaviour.
+- **Per-line (optional)** — when `linePrefix` and/or `lineSuffix` are
+  non-empty, `wrap()` splits the payload on `\n` and wraps each line
+  individually with the line-level prefix/suffix (see the section below).
 
-For the each-line walk, the separator is searched in the raw payload bytes,
-so it must use the same escape-sequence syntax as `prefix`/`suffix` (e.g.
-`\n`, `\r`, `\x1C`). The `segmentSeparator` field is informational and is
-not applied to the payload — if you need to mutate the user-typed text,
-do it in the webview or as a separate layer before `wrap()` runs.
+The `segmentSeparator` field is informational and is not applied to the
+payload — if you need to mutate the user-typed text, do it in the webview
+or as a separate layer before `wrap()` runs.
 
-If `lineSeparator` is empty (or resolves to zero bytes), `wrap()` falls back
-to the single-wrap path. This is a safety net so a misconfigured envelope
-never produces no output.
+### Line prefix and suffix
 
-### Per-line wrap mode (`lineMode`)
+`EnvelopeSpec` has two optional fields that add bytes to every line of
+the payload:
 
-When `lineMode` is `'each-line'`, `wrap()` walks the payload and emits
-`prefix + chunk + suffix` for every chunk split on `lineSeparator`. The
-separator is re-emitted **between** wrapped chunks — it is never replaced
-or stripped. Use `'each-line'` for protocols where each line is its own
-framed record and the server expects the framing bytes on every record
-rather than once around the whole message.
+- `linePrefix` — bytes (escape-sequence string) prepended to every line.
+- `lineSuffix` — bytes (escape-sequence string) appended to every line.
 
-Pick `'each-line'` when:
+When both are empty (the default), `wrap()` is byte-identical to the
+single-wrap behaviour: `prefix + payload + suffix`. This is a fast path
+inside `wrap()`.
+
+When at least one is non-empty, `wrap()` splits the payload on `\n` (a
+single byte 0x0A) and emits `linePrefix + line + lineSuffix` for each
+line, including empty lines from leading, trailing, or consecutive
+newlines. Consecutive lines are rejoined with a single `\n` byte. The
+whole per-line result is then wrapped with the outer `prefix` and
+`suffix`.
+
+Example (NRPE-style STX/ETX per line with a `>` line marker):
+
+```json
+{
+  "tcpClient.envelopes.custom": [
+    {
+      "id": "stx-etx-line",
+      "label": "STX/ETX per line",
+      "prefix": "\\x02",
+      "suffix": "\\x03",
+      "linePrefix": ">",
+      "lineSuffix": "<"
+    }
+  ]
+}
+```
+
+A payload of `LOAD\nCPU\nMEM` produces (STX wraps the whole
+message, then per-line `> ... <`, lines rejoined with single `\n`, then
+ETX at the end):
+
+```
+\x02 >LOAD< \n >CPU< \n >MEM< \x03
+```
+
+Use `linePrefix` / `lineSuffix` when:
 
 - The server reads discrete commands/messages, one per line
   (NRPE `check_nrpe`, syslog-style line protocols, line-oriented
@@ -141,34 +172,13 @@ Pick `'each-line'` when:
 - You want a single user-typed payload to become N independent framed
   records on the wire.
 
-Pick `'none'` (default) when:
+Leave both empty (default) when:
 
 - The protocol frames the whole message once (HL7 v2 MLLP, STX/ETX).
 - Your payload is a single binary blob or already-terminated record.
 
-The `lineSeparator` field uses the same escape-sequence syntax as
-`prefix`/`suffix` (e.g. `\n`, `\r`, `\x1C`). It defaults to `\n` so an
-incomplete custom-envelope config still does something sensible.
-
-Example — NRPE-style STX/ETX per line:
-
-```jsonc
-// settings.json
-"tcpClient.envelopes.custom": [
-  {
-    "id": "nrpe-stx-etx",
-    "label": "NRPE (STX/ETX per line)",
-    "prefix": "\\x02",
-    "suffix": "\\x03",
-    "lineMode": "each-line",
-    "lineSeparator": "\\n"
-  }
-]
-```
-
-With `lineMode: "each-line"` and `lineSeparator: "\n"`, a payload of
-`LOAD\nCPU\nMEM` becomes
-`<STX>LOAD<ETX>\n<STX>CPU<ETX>\n<STX>MEM<ETX>` on the wire.
+The `linePrefix` and `lineSuffix` fields use the same escape-sequence
+syntax as `prefix` / `suffix` (e.g. `\x02`, `\n`, `\r`).
 
 ### Custom envelopes
 
@@ -180,12 +190,12 @@ via VS Code's Settings UI as well as `settings.json`. Adding a new custom
 envelope requires no code changes.
 
 Every custom envelope accepts the full `EnvelopeSpec` shape: `prefix`,
-`suffix`, `segmentSeparator`, plus the optional per-line wrap fields
-`lineMode` (`'none' | 'each-line'`) and `lineSeparator` (escape-string,
-default `\\n`). The two new fields are optional — omitting `lineMode`
-defaults to `'none'`, which preserves the v0.2.0 behavior of wrapping the
-whole payload once. See the per-line wrap section above for the wrap-mode
-semantics.
+`suffix`, `segmentSeparator`, plus the optional per-line fields
+`linePrefix` and `lineSuffix` (escape-string, default `""`). When both
+`linePrefix` and `lineSuffix` are empty, the envelope wraps the whole
+payload once — identical to v0.2.0 behavior. When at least one is
+non-empty, `wrap()` splits on `\n` and wraps every line individually.
+See the "Line prefix and suffix" section above for the full semantics.
 
 ---
 
