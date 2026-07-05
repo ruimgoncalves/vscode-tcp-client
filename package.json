@@ -4,7 +4,10 @@
   "description": "Send and receive TCP messages from VS Code with escape-sequence support",
   "version": "0.2.0",
   "publisher": "ruigoncalves",
-  "engines": { "vscode": "^1.85.0" },
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=20"
+  },
   "categories": ["Other"],
   "keywords": ["tcp", "network", "socket", "client"],
   "activationEvents": [],
@@ -60,14 +63,14 @@
   },
   "devDependencies": {
     "@types/mocha": "^10.0.6",
-    "@types/node": "^18.19.0",
+    "@types/node": "^22.10.0",
     "@types/vscode": "^1.85.0",
-    "@typescript-eslint/eslint-plugin": "^6.21.0",
-    "@typescript-eslint/parser": "^6.21.0",
-    "@vscode/test-electron": "^2.3.8",
-    "@vscode/vsce": "^2.24.0",
-    "eslint": "^8.56.0",
-    "mocha": "^10.3.0",
-    "typescript": "^5.3.3"
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "@vscode/test-electron": "^2.5.0",
+    "@vscode/vsce": "^2.32.0",
+    "eslint": "^8.57.1",
+    "mocha": "^10.8.0",
+    "typescript": "^5.9.0"
   }
 }
