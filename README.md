@@ -31,6 +31,9 @@ Server address, encoding, and draft message survive panel close/reopen and VS Co
 **📨 Message envelopes**
 Wrap outgoing messages with configurable prefix/suffix bytes — pick a built-in (HL7 v2 MLLP framing, raw LLP) or define your own custom envelope in `settings.json`. No need to type framing bytes manually.
 
+**❓ Inline syntax help**
+Click the yellow `?` button (top-right of the panel) to open a built-in cheat sheet for escape sequences and variables. Click any row to paste the syntax into the Message field — no need to memorize `\xHH`, `{{timestamp|YYYY-MM-DD}}`, or the MLLP prefix bytes.
+
 ---
 
 ## How to Use
@@ -41,6 +44,7 @@ Wrap outgoing messages with configurable prefix/suffix bytes — pick a built-in
 4. Type a message — use escape sequences for binary data
 5. Press **Send** or **Ctrl+Enter**
 6. Watch responses appear in the log with timestamps and response times
+7. Not sure how to type a variable or escape? Click the yellow `?` (top-right) for the syntax cheat sheet
 
 ### Escape Sequences
 
@@ -225,6 +229,31 @@ behaviour.
 
 Custom envelopes appear in the **Envelope** dropdown alongside the built-ins.
 The selection is persisted per-panel along with the rest of the form state.
+
+### Syntax Help Modal
+
+Not sure how to write `\xFF` or `{{timestamp|YYYY-MM-DD}}`? Click the yellow
+`?` button in the top-right of the panel to open an inline cheat sheet. The
+modal has two side-by-side columns:
+
+- **Escape Sequences** — every byte escape the encoder supports (`\xHH`,
+  `\n`, `\r`, `\t`, `\\`, `\0`, `\{`, `\}`)
+- **Variables** — every built-in (`{{timestamp}}`, `{{timestamp|FORMAT}}`,
+  `{{seq}}`, `{{uuid}}`) plus any user-defined variables from your
+  `settings.json`. Each row shows a live preview for `{{timestamp|FORMAT}}`.
+
+**Click any row** to paste that syntax into the Message field at the
+cursor position — no typing, no memorizing.
+
+**Closing the modal:** click the row (which pastes and closes), press
+**Escape**, or click outside the modal card.
+
+### Keyboard Shortcuts
+
+| Shortcut       | Action                          |
+|----------------|---------------------------------|
+| `Ctrl+Enter`   | Send the current message        |
+| `Escape`       | Close the syntax help modal     |
 
 ---
 
