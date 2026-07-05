@@ -116,10 +116,6 @@ extension:
   non-empty, `wrap()` splits the payload on `\n` and wraps each line
   individually with the line-level prefix/suffix (see the section below).
 
-The `segmentSeparator` field is informational and is not applied to the
-payload — if you need to mutate the user-typed text, do it in the webview
-or as a separate layer before `wrap()` runs.
-
 ### Line prefix and suffix
 
 `EnvelopeSpec` has two optional fields that add bytes to every line of
@@ -190,7 +186,7 @@ via VS Code's Settings UI as well as `settings.json`. Adding a new custom
 envelope requires no code changes.
 
 Every custom envelope accepts the full `EnvelopeSpec` shape: `prefix`,
-`suffix`, `segmentSeparator`, plus the optional per-line fields
+`suffix`, plus the optional per-line fields
 `linePrefix` and `lineSuffix` (escape-string, default `""`). When both
 `linePrefix` and `lineSuffix` are empty, the envelope wraps the whole
 payload once — identical to v0.2.0 behavior. When at least one is

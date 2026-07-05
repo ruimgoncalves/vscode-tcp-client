@@ -10,19 +10,19 @@ import { _registerBuiltin } from './Envelope';
 _registerBuiltin({
   id: 'none',
   label: 'None (raw)',
-  spec: { prefix: '', suffix: '', segmentSeparator: '', linePrefix: '', lineSuffix: '' },
+  spec: { prefix: '', suffix: '', linePrefix: '', lineSuffix: '' },
 });
 
 _registerBuiltin({
   id: 'hl7-mllp',
   label: 'HL7 v2 (MLLP framing)',
   // VT (0x0B) prefix, FS (0x1C) + CR (0x0D) suffix; segments separated by CR.
-  spec: { prefix: '\\x0B', suffix: '\\x1C\\r', segmentSeparator: '\\r', linePrefix: '', lineSuffix: '' },
+  spec: { prefix: '\\x0B', suffix: '\\x1C\\r', linePrefix: '', lineSuffix: '' },
 });
 
 _registerBuiltin({
   id: 'hl7-llp',
   label: 'HL7 v2 (raw LLP, no VT)',
   // FS+CR suffix only; no leading VT.
-  spec: { prefix: '', suffix: '\\x1C\\r', segmentSeparator: '\\r', linePrefix: '', lineSuffix: '' },
+  spec: { prefix: '', suffix: '\\x1C\\r', linePrefix: '', lineSuffix: '' },
 });

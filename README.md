@@ -76,9 +76,6 @@ Define your own envelopes in `settings.json` under
 - `label` *(required)* — a human-readable label shown in the dropdown
 - `prefix` — bytes to prepend (escape-sequence string, default `""`)
 - `suffix` — bytes to append (escape-sequence string, default `""`)
-- `segmentSeparator` — informational; describes the byte that separates
-  segments inside the payload. Not transformed by `wrap` in v1 — you
-  provide the payload text exactly as you want it transmitted.
 - `linePrefix` — bytes (escape-sequence string) prepended to every line
   of the payload. Default `""`. When paired with `lineSuffix`, this turns
   the envelope into a per-line framing protocol (e.g. NRPE).
@@ -94,8 +91,7 @@ Define your own envelopes in `settings.json` under
       "id": "hl7-mllp-custom",
       "label": "HL7 v2 MLLP (custom)",
       "prefix": "\\x0B",
-      "suffix": "\\x1C\\r",
-      "segmentSeparator": "\\r"
+      "suffix": "\\x1C\\r"
     }
   ]
 }

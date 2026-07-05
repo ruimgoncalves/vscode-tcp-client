@@ -46,7 +46,6 @@ function spec(partial: Partial<EnvelopeSpec>): EnvelopeSpec {
   return {
     prefix: '',
     suffix: '',
-    segmentSeparator: '',
     linePrefix: '',
     lineSuffix: '',
     ...partial,
@@ -99,14 +98,6 @@ suite('Envelope – wrap', () => {
     // \n  \r  \t  \\  \0  \x41  =  0A 0D 09 5C 00 41
     assert.deepStrictEqual([...out], [0x0a, 0x0d, 0x09, 0x5c, 0x00, 0x41, 0x50]);
   });
-
-  test('segmentSeparator is informational only (not applied to payload)', () => {
-    // User typed segments separated by \n; the segmentSeparator=\r field
-    // should not transform the payload in v1.
-    const payload = Buffer.from('A\nB\nC');
-    const out = wrap(payload, spec({ segmentSeparator: '\\r' }));
-    assert.deepStrictEqual([...out], [...payload]);
-  });
 });
 
 suite('Envelope – registry (register / get / list)', () => {
@@ -118,7 +109,7 @@ suite('Envelope – registry (register / get / list)', () => {
     const env: Envelope = {
       id: 'custom-1',
       label: 'Custom One',
-      spec: { prefix: '\\xAA', suffix: '\\xBB', segmentSeparator: '', linePrefix: '', lineSuffix: '' },
+      spec: { prefix: '\\xAA', suffix: '\\xBB', linePrefix: '', lineSuffix: '' },
     };
     register(env);
     const got = get('custom-1');
@@ -172,7 +163,6 @@ suite('Envelope – builtins (none / hl7-mllp / hl7-llp)', () => {
     assert.ok(e, 'hl7-mllp should be a built-in');
     assert.strictEqual(e!.spec.prefix, '\\x0B');
     assert.strictEqual(e!.spec.suffix, '\\x1C\\r');
-    assert.strictEqual(e!.spec.segmentSeparator, '\\r');
   });
 });
 
@@ -240,7 +230,6 @@ suite('Envelope – getCustom (reads VS Code configuration)', () => {
             label: 'My HL7 Wrapper',
             prefix: '\\x0B',
             suffix: '\\x1C\\r',
-            segmentSeparator: '\\r',
           },
         ],
         vscode.ConfigurationTarget.Global
@@ -251,7 +240,6 @@ suite('Envelope – getCustom (reads VS Code configuration)', () => {
     assert.strictEqual(custom[0].label, 'My HL7 Wrapper');
     assert.strictEqual(custom[0].spec.prefix, '\\x0B');
     assert.strictEqual(custom[0].spec.suffix, '\\x1C\\r');
-    assert.strictEqual(custom[0].spec.segmentSeparator, '\\r');
   });
 
   test('skips malformed entries (missing id or label)', async () => {

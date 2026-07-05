@@ -16,11 +16,6 @@ import { encodeMessage } from '../MessageEncoder';
  *
  * - `prefix`           — bytes written immediately before the payload
  * - `suffix`           — bytes written immediately after the payload
- * - `segmentSeparator` — informational; describes the byte that separates
- *                        segments inside the payload (e.g. `\r` for HL7 v2).
- *                        Not modified by `wrap` in v1 — the user is trusted
- *                        to provide the payload exactly as they want it
- *                        transmitted; `wrap` only adds the prefix and suffix.
  * - `linePrefix`       — bytes prepended to every line of the payload
  *                        (added inside the outer prefix/suffix). Default ''.
  * - `lineSuffix`       — bytes appended to every line of the payload
@@ -29,7 +24,6 @@ import { encodeMessage } from '../MessageEncoder';
 export type EnvelopeSpec = {
   prefix: string;
   suffix: string;
-  segmentSeparator: string;
   linePrefix: string;
   lineSuffix: string;
 };
@@ -50,7 +44,6 @@ export type EnvelopeDef = {
   label: string;
   prefix?: string;
   suffix?: string;
-  segmentSeparator?: string;
   linePrefix?: string;
   lineSuffix?: string;
 };
@@ -71,9 +64,6 @@ export type EnvelopeDef = {
  * — the right behavior for line-oriented protocols. Consecutive lines
  * are rejoined with a single `\n` byte. The whole per-line result is
  * then wrapped with the outer prefix and suffix.
- *
- * The `segmentSeparator` field of `spec` is informational; it is not
- * applied to the payload.
  */
 export function wrap(payload: Buffer, spec: EnvelopeSpec): Buffer {
   const prefixBytes = encodeMessage(spec.prefix, 'latin1');
@@ -154,8 +144,6 @@ export function getCustom(): Envelope[] {
       spec: {
         prefix: typeof entry.prefix === 'string' ? entry.prefix : '',
         suffix: typeof entry.suffix === 'string' ? entry.suffix : '',
-        segmentSeparator:
-          typeof entry.segmentSeparator === 'string' ? entry.segmentSeparator : '',
         linePrefix: typeof entry.linePrefix === 'string' ? entry.linePrefix : '',
         lineSuffix: typeof entry.lineSuffix === 'string' ? entry.lineSuffix : '',
       },
@@ -183,7 +171,7 @@ export function resolve(id: string): Envelope {
     return {
       id: 'none',
       label: 'None (raw)',
-      spec: { prefix: '', suffix: '', segmentSeparator: '', linePrefix: '', lineSuffix: '' },
+      spec: { prefix: '', suffix: '', linePrefix: '', lineSuffix: '' },
     };
   }
   throw new Error(`Unknown envelope id: ${id}`);
@@ -233,16 +221,16 @@ export function _loadBuiltinsForTests(): void {
   _registerBuiltin({
     id: 'none',
     label: 'None (raw)',
-    spec: { prefix: '', suffix: '', segmentSeparator: '', linePrefix: '', lineSuffix: '' },
+    spec: { prefix: '', suffix: '', linePrefix: '', lineSuffix: '' },
   });
   _registerBuiltin({
     id: 'hl7-mllp',
     label: 'HL7 v2 (MLLP framing)',
-    spec: { prefix: '\\x0B', suffix: '\\x1C\\r', segmentSeparator: '\\r', linePrefix: '', lineSuffix: '' },
+    spec: { prefix: '\\x0B', suffix: '\\x1C\\r', linePrefix: '', lineSuffix: '' },
   });
   _registerBuiltin({
     id: 'hl7-llp',
     label: 'HL7 v2 (raw LLP, no VT)',
-    spec: { prefix: '', suffix: '\\x1C\\r', segmentSeparator: '\\r', linePrefix: '', lineSuffix: '' },
+    spec: { prefix: '', suffix: '\\x1C\\r', linePrefix: '', lineSuffix: '' },
   });
 }
