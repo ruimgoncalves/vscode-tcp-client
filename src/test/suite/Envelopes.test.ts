@@ -6,8 +6,6 @@ import {
   get,
   list,
   listBuiltin,
-  getCustom,
-  getAll,
   resolve,
   Envelope,
   EnvelopeSpec,
@@ -200,80 +198,65 @@ suite('Envelope – resolve', () => {
   });
 });
 
-suite('Envelope – getCustom (reads VS Code configuration)', () => {
+suite('Envelope – getAll (built-ins only, no settings source)', () => {
 
   setup(() => { _clearAllForTests(); _loadBuiltinsForTests(); });
 
-  teardown(async () => {
-    // Always restore the setting to its empty default so we don't pollute
-    // other tests or the user's settings.
-    await vscode.workspace
-      .getConfiguration('tcpClient')
-      .update('envelopes.custom', [], vscode.ConfigurationTarget.Global);
+  test('returns only built-in envelopes', () => {
+    const all = listBuiltin();
+    const ids = all.map((e) => e.id).sort();
+    assert.deepStrictEqual(ids, ['hl7-llp', 'hl7-mllp', 'none']);
   });
 
-  test('returns [] when no custom envelopes are configured', async () => {
-    await vscode.workspace
-      .getConfiguration('tcpClient')
-      .update('envelopes.custom', [], vscode.ConfigurationTarget.Global);
-    assert.deepStrictEqual(getCustom(), []);
+  test('listBuiltin returns the three standard presets', () => {
+    assert.strictEqual(listBuiltin().length, 3);
+    const mllp = listBuiltin().find((e) => e.id === 'hl7-mllp');
+    assert.ok(mllp);
+    assert.strictEqual(mllp.spec.prefix, '\\x0B');
+    assert.strictEqual(mllp.spec.suffix, '\\x1C\\r');
   });
 
-  test('reads a custom envelope from tcpClient.envelopes.custom', async () => {
-    await vscode.workspace
-      .getConfiguration('tcpClient')
-      .update(
-        'envelopes.custom',
-        [
-          {
-            id: 'my-hl7',
-            label: 'My HL7 Wrapper',
-            prefix: '\\x0B',
-            suffix: '\\x1C\\r',
-          },
-        ],
-        vscode.ConfigurationTarget.Global
-      );
-    const custom = getCustom();
-    assert.strictEqual(custom.length, 1);
-    assert.strictEqual(custom[0].id, 'my-hl7');
-    assert.strictEqual(custom[0].label, 'My HL7 Wrapper');
-    assert.strictEqual(custom[0].spec.prefix, '\\x0B');
-    assert.strictEqual(custom[0].spec.suffix, '\\x1C\\r');
+  test('resolve("none") returns a passthrough envelope', () => {
+    const e = resolve('none');
+    assert.strictEqual(e.id, 'none');
+    assert.deepStrictEqual(e.spec, { prefix: '', suffix: '', linePrefix: '', lineSuffix: '' });
   });
 
-  test('skips malformed entries (missing id or label)', async () => {
-    await vscode.workspace
-      .getConfiguration('tcpClient')
-      .update(
-        'envelopes.custom',
-        [
-          { id: 'ok', label: 'OK', prefix: 'P', suffix: 'S' },
-          { id: 'no-label' as unknown as string /* label missing */ },
-          { label: 'no-id' } as unknown as { id: string },
-        ],
-        vscode.ConfigurationTarget.Global
-      );
-    const ids = getCustom().map((e) => e.id);
-    assert.deepStrictEqual(ids, ['ok']);
+  test('resolve("hl7-mllp") returns the MLLP envelope', () => {
+    const e = resolve('hl7-mllp');
+    assert.strictEqual(e.spec.prefix, '\\x0B');
+    assert.strictEqual(e.spec.suffix, '\\x1C\\r');
   });
 
-  test('getAll returns builtins first then custom', async () => {
-    await vscode.workspace
-      .getConfiguration('tcpClient')
-      .update(
-        'envelopes.custom',
-        [{ id: 'cust-1', label: 'Cust 1', prefix: '', suffix: '' }],
-        vscode.ConfigurationTarget.Global
-      );
-    const all = getAll();
-    const builtinIds = all.slice(0, listBuiltin().length).map((e) => e.id);
-    const customIds = all.slice(listBuiltin().length).map((e) => e.id);
-    // Builtins (from the side-effect import) are first
-    assert.ok(builtinIds.includes('none'));
-    assert.ok(builtinIds.includes('hl7-mllp'));
-    // Custom comes after
-    assert.ok(customIds.includes('cust-1'));
+  test('resolve throws on unknown id (no settings fallback)', () => {
+    assert.throws(() => resolve('not-a-real-envelope'), /Unknown envelope id/);
+  });
+});
+
+suite('Envelope – wrap with arbitrary spec (UI-driven)', () => {
+
+  test('wraps with all four fields populated', () => {
+    const payload = Buffer.from('hi');
+    const out = wrap(payload, {
+      prefix: '\\x0B',
+      suffix: '\\x1C\\r',
+      linePrefix: '>',
+      lineSuffix: '<',
+    });
+    // Single-line payload: outer wrap of [prefix, >, payload, <, suffix]
+    assert.deepStrictEqual([...out], [0x0B, 0x3e, 0x68, 0x69, 0x3c, 0x1c, 0x0d]);
+  });
+
+  test('empty fields produce byte-identical output to no envelope', () => {
+    const payload = Buffer.from('hello');
+    const out = wrap(payload, { prefix: '', suffix: '', linePrefix: '', lineSuffix: '' });
+    assert.deepStrictEqual(out, payload);
+  });
+
+  test('only linePrefix set: per-line wrap with no outer', () => {
+    const payload = Buffer.from('a\nb');
+    const out = wrap(payload, { prefix: '', suffix: '', linePrefix: '>', lineSuffix: '' });
+    assert.deepStrictEqual([...out], [0x3e, 0x61, 0x0a, 0x3e, 0x62]);
   });
 });
 

@@ -2,7 +2,7 @@
   "name": "vscode-tcp-client",
   "displayName": "TCP Client",
   "description": "Send and receive TCP messages from VS Code with escape-sequence support",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "ruigoncalves",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Other"],
@@ -20,23 +20,6 @@
     "configuration": {
       "title": "TCP Client",
       "properties": {
-        "tcpClient.envelopes.custom": {
-          "type": "array",
-          "default": [],
-          "description": "User-defined message envelopes. Each entry: { id, label, prefix, suffix, linePrefix, lineSuffix } where prefix/suffix/linePrefix/lineSuffix are escape-sequence strings (\\\\xHH, \\\\n, \\\\r, \\\\t, \\\\\\\\, \\\\0). linePrefix and lineSuffix are prepended/appended to every line of the payload before the outer prefix/suffix are applied.",
-          "items": {
-            "type": "object",
-            "required": ["id", "label"],
-            "properties": {
-              "id": { "type": "string" },
-              "label": { "type": "string" },
-              "prefix": { "type": "string", "default": "" },
-              "suffix": { "type": "string", "default": "" },
-              "linePrefix": { "type": "string", "default": "", "description": "Bytes to prepend to every line (escape-sequence string). Defaults to ''." },
-              "lineSuffix": { "type": "string", "default": "", "description": "Bytes to append to every line (escape-sequence string). Defaults to ''." }
-            }
-          }
-        },
         "tcpClient.variables.custom": {
           "type": "array",
           "default": [],

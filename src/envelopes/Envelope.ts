@@ -1,4 +1,3 @@
-import * as vscode from 'vscode';
 import { encodeMessage } from '../MessageEncoder';
 
 /**
@@ -32,20 +31,6 @@ export type Envelope = {
   id: string;
   label: string;
   spec: EnvelopeSpec;
-};
-
-/**
- * Shape of a custom-envelope entry as stored in `tcpClient.envelopes.custom`.
- * The fields are flattened (no nested `spec`) to match the package.json
- * configuration schema.
- */
-export type EnvelopeDef = {
-  id: string;
-  label: string;
-  prefix?: string;
-  suffix?: string;
-  linePrefix?: string;
-  lineSuffix?: string;
 };
 
 /**
@@ -94,9 +79,9 @@ export function wrap(payload: Buffer, spec: EnvelopeSpec): Buffer {
   return Buffer.concat(wrapped);
 }
 
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Registry
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 const builtins: Envelope[] = [];
 const registered: Map<string, Envelope> = new Map();
@@ -111,7 +96,7 @@ export function get(id: string): Envelope | undefined {
   return registered.get(id);
 }
 
-/** Lists every envelope currently in the runtime registry (no custom ones from settings). */
+/** Lists every envelope currently in the runtime registry. */
 export function list(): Envelope[] {
   return Array.from(registered.values());
 }
@@ -122,51 +107,13 @@ export function listBuiltin(): Envelope[] {
 }
 
 /**
- * Reads user-defined envelopes from VS Code configuration
- * (`tcpClient.envelopes.custom`). Returns an empty array if the setting is
- * missing or malformed.
- */
-export function getCustom(): Envelope[] {
-  const raw = vscode.workspace
-    .getConfiguration('tcpClient')
-    .get<EnvelopeDef[]>('envelopes.custom', []);
-
-  if (!Array.isArray(raw)) { return []; }
-
-  const result: Envelope[] = [];
-  for (const entry of raw) {
-    if (!entry || typeof entry.id !== 'string' || typeof entry.label !== 'string') {
-      continue;
-    }
-    result.push({
-      id: entry.id,
-      label: entry.label,
-      spec: {
-        prefix: typeof entry.prefix === 'string' ? entry.prefix : '',
-        suffix: typeof entry.suffix === 'string' ? entry.suffix : '',
-        linePrefix: typeof entry.linePrefix === 'string' ? entry.linePrefix : '',
-        lineSuffix: typeof entry.lineSuffix === 'string' ? entry.lineSuffix : '',
-      },
-    });
-  }
-  return result;
-}
-
-/** Built-ins first, then custom envelopes from settings. */
-export function getAll(): Envelope[] {
-  return [...listBuiltin(), ...getCustom()];
-}
-
-/**
- * Resolves an envelope by id, looking first at built-ins, then at the
- * custom envelopes from settings, and finally falling back to the `none`
- * passthrough envelope. Throws on unknown ids.
+ * Resolves an envelope by id, looking first at built-ins, then at runtime
+ * registered entries, and finally falling back to the `none` passthrough
+ * envelope. Throws on unknown ids.
  */
 export function resolve(id: string): Envelope {
   const fromRegistry = registered.get(id);
   if (fromRegistry) { return fromRegistry; }
-  const fromCustom = getCustom().find((e) => e.id === id);
-  if (fromCustom) { return fromCustom; }
   if (id === 'none') {
     return {
       id: 'none',

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { TcpClient, ConnectionState } from './TcpClient';
 import { encodeMessage, formatBytes, TextEncoding } from './MessageEncoder';
-import { getAll, resolve, wrap, Envelope } from './envelopes/Envelope';
+import { listBuiltin, wrap } from './envelopes/Envelope';
 import {
   getAll as getAllVariables,
   substitute,
@@ -18,7 +18,6 @@ interface WebviewMessage {
     | 'disconnect'
     | 'send'
     | 'getState'
-    | 'getEnvelopes'
     | 'getVariables'
     | 'addVariable'
     | 'deleteVariable'
@@ -28,7 +27,11 @@ interface WebviewMessage {
   server?: string;
   message?: string;
   encoding?: string;
-  envelope?: string;
+  envelopeId?: string;
+  envelopePrefix?: string;
+  envelopeSuffix?: string;
+  envelopeLinePrefix?: string;
+  envelopeLineSuffix?: string;
   name?: string;
   value?: string;
 }
@@ -226,23 +229,21 @@ export class TcpPanel {
           // is read here and advanced below after the send succeeds.
           const substituted = substitute(msg.message ?? '', getAllVariables(), new Date(), { seq: this._seq });
           let buf = encodeMessage(substituted, msg.encoding as TextEncoding ?? 'utf8');
-          // Resolve the requested envelope and wrap the payload. An unknown
-          // id is treated as an error: post it to the webview and skip the
-          // send so the user can correct the dropdown before retrying.
-          const envId = msg.envelope ?? 'none';
-          let envelope: Envelope;
-          try {
-            envelope = resolve(envId);
-          } catch (err: unknown) {
-            this._panel.webview.postMessage({ type: 'error', message: (err as Error).message });
-            break;
-          }
-          buf = wrap(buf, envelope.spec);
+          // The UI sends the envelope spec directly (prefix/suffix/linePrefix/lineSuffix
+          // from the always-visible editor). We trust the user's bytes; parse errors
+          // surface as exceptions caught below.
+          buf = wrap(buf, {
+            prefix: msg.envelopePrefix ?? '',
+            suffix: msg.envelopeSuffix ?? '',
+            linePrefix: msg.envelopeLinePrefix ?? '',
+            lineSuffix: msg.envelopeLineSuffix ?? '',
+          });
           this._tcpClient.send(buf);
           this._lastSendTime = Date.now();
           // Advance the seq counter only on a successful send. Failures
-          // (envelope resolution, encoding error, socket error) must NOT
-          // skip a number; the user's next attempt should get the next
+          // (encoding error, socket error, invalid escape sequences in the
+          // envelope spec) must NOT skip a number; the user's next attempt
+          // should get the next
           // value, not "fill in" the skipped one.
           this._seq += 1;
           this._panel.webview.postMessage({
@@ -278,12 +279,6 @@ export class TcpPanel {
         // is cheap, but `void` swallows the Thenable cleanly. An empty
         // string is a valid persisted state (user-cleared textarea).
         void this._ctx.globalState.update('message', msg.message ?? '');
-        break;
-      case 'getEnvelopes':
-        this._panel.webview.postMessage({
-          type: 'envelopes',
-          envelopes: getAll().map((e) => ({ id: e.id, label: e.label })),
-        });
         break;
       case 'getVariables':
         this._sendVariablesState();
@@ -375,12 +370,20 @@ export class TcpPanel {
   private _getHtmlForWebview(webview: vscode.Webview): string {
     const nonce = getNonce();
     // Render the envelope options server-side so the dropdown is populated
-    // immediately, even before any async message round-trip. Custom envelopes
-    // from settings.json are also included because getAll() reads from the
-    // configuration scope synchronously.
-    const envelopeOptions = getAll()
+    // immediately, even before any async message round-trip. The list
+    // contains only built-ins; user envelopes are no longer configurable
+    // via settings.json (the always-visible fields in the UI cover that).
+    const envelopeOptions = listBuiltin()
       .map((e) => `<option value="${escapeHtmlAttr(e.id)}">${escapeHtmlAttr(e.label)}</option>`)
       .join('');
+    // The envelope fields in the UI prefill from the *currently selected*
+    // preset, so the server-rendered HTML shows the right placeholders on
+    // first paint without waiting for a client-side bootstrap round-trip.
+    const initialPreset = listBuiltin().find((e) => e.id === 'none') ?? listBuiltin()[0];
+    const presetPrefix = initialPreset ? initialPreset.spec.prefix : '';
+    const presetSuffix = initialPreset ? initialPreset.spec.suffix : '';
+    const presetLinePrefix = initialPreset ? initialPreset.spec.linePrefix : '';
+    const presetLineSuffix = initialPreset ? initialPreset.spec.lineSuffix : '';
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -532,6 +535,57 @@ export class TcpPanel {
   }
   .help-btn:focus { outline: 2px solid #ffd633; outline-offset: 1px; }
 
+  /* Envelope editor: always-visible 4-field grid below the preset dropdown */
+  .envelope-notice {
+    background: var(--vscode-notifications-background, var(--vscode-editorWidget-background));
+    color: var(--vscode-notifications-foreground, var(--vscode-foreground));
+    border: 1px solid var(--vscode-notifications-border, var(--vscode-widget-border));
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 2px;
+    margin: -2px 0 4px 0;
+  }
+  .envelope-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 10px;
+    margin-left: 90px;       /* matches label column width of .row */
+    margin-bottom: 8px;
+  }
+  @media (max-width: 520px) {
+    .envelope-fields { grid-template-columns: 1fr; margin-left: 0; }
+  }
+  .env-field { display: flex; flex-direction: column; gap: 2px; }
+  .env-field label {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
+  .env-input-wrap { position: relative; }
+  .env-field input {
+    width: 100%;
+    height: 24px;
+    padding: 2px 24px 2px 6px;       /* right padding reserves space for the reset button */
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: var(--vscode-editor-font-size, 12px);
+  }
+  .env-reset {
+    position: absolute;
+    right: 2px; top: 2px;
+    width: 18px; height: 18px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--vscode-descriptionForeground);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    border-radius: 2px;
+  }
+  .env-reset:hover { background: var(--vscode-button-secondaryHoverBackground); color: var(--vscode-foreground); }
+  .env-reset[hidden] { display: none; }
+
   /* Syntax help modal */
   .modal-backdrop {
     position: fixed; inset: 0;
@@ -636,6 +690,43 @@ export class TcpPanel {
   </select>
 </div>
 
+<div id="envelope-notice" class="envelope-notice" hidden></div>
+
+<div id="envelope-fields" class="envelope-fields">
+  <div class="env-field">
+    <label for="envelope-prefix">Prefix</label>
+    <div class="env-input-wrap">
+      <input id="envelope-prefix" type="text" spellcheck="false" autocomplete="off"
+             placeholder="${escapeHtmlAttr(presetPrefix)}">
+      <button id="envelope-reset-prefix" class="env-reset" type="button" title="Reset to preset default" tabindex="-1" aria-label="Reset prefix" hidden>↺</button>
+    </div>
+  </div>
+  <div class="env-field">
+    <label for="envelope-suffix">Suffix</label>
+    <div class="env-input-wrap">
+      <input id="envelope-suffix" type="text" spellcheck="false" autocomplete="off"
+             placeholder="${escapeHtmlAttr(presetSuffix)}">
+      <button id="envelope-reset-suffix" class="env-reset" type="button" title="Reset to preset default" tabindex="-1" aria-label="Reset suffix" hidden>↺</button>
+    </div>
+  </div>
+  <div class="env-field">
+    <label for="envelope-linePrefix">Line Prefix</label>
+    <div class="env-input-wrap">
+      <input id="envelope-linePrefix" type="text" spellcheck="false" autocomplete="off"
+             placeholder="${escapeHtmlAttr(presetLinePrefix)}">
+      <button id="envelope-reset-linePrefix" class="env-reset" type="button" title="Reset to preset default" tabindex="-1" aria-label="Reset line prefix" hidden>↺</button>
+    </div>
+  </div>
+  <div class="env-field">
+    <label for="envelope-lineSuffix">Line Suffix</label>
+    <div class="env-input-wrap">
+      <input id="envelope-lineSuffix" type="text" spellcheck="false" autocomplete="off"
+             placeholder="${escapeHtmlAttr(presetLineSuffix)}">
+      <button id="envelope-reset-lineSuffix" class="env-reset" type="button" title="Reset to preset default" tabindex="-1" aria-label="Reset line suffix" hidden>↺</button>
+    </div>
+  </div>
+</div>
+
 <div class="msg-wrap">
   <div class="row">
     <span class="sec-label">Message</span>
@@ -699,6 +790,23 @@ export class TcpPanel {
   var dotEl     = document.getElementById('dot');
   var encEl     = document.getElementById('encoding');
   var envEl     = document.getElementById('envelope');
+  var envFields = {
+    prefix:     document.getElementById('envelope-prefix'),
+    suffix:     document.getElementById('envelope-suffix'),
+    linePrefix: document.getElementById('envelope-linePrefix'),
+    lineSuffix: document.getElementById('envelope-lineSuffix'),
+  };
+  var envResets = {
+    prefix:     document.getElementById('envelope-reset-prefix'),
+    suffix:     document.getElementById('envelope-reset-suffix'),
+    linePrefix: document.getElementById('envelope-reset-linePrefix'),
+    lineSuffix: document.getElementById('envelope-reset-lineSuffix'),
+  };
+  var envNotice = document.getElementById('envelope-notice');
+  // Preset definitions injected from the extension host as JSON.
+// (Replaced below by string-concat so the template-literal escape-twice
+// problem doesn't mangle backslash sequences like \x0B.)
+    var PRESETS = __PRESETS_PLACEHOLDER__;
   var msgEl     = document.getElementById('msg');
   var sendEl    = document.getElementById('sendBtn');
   var clearEl   = document.getElementById('clearBtn');
@@ -732,13 +840,116 @@ export class TcpPanel {
   if (saved.server)   { serverEl.value = saved.server; }
   if (saved.encoding) { encEl.value    = saved.encoding; }
   if (saved.envelope) { envEl.value    = saved.envelope; }
+  // Restore the envelope spec (per-field overrides) if the previous session
+  // had any. The dropdown alone doesn't capture modifications.
+  if (saved.envelopePrefix     !== undefined) { envFields.prefix.value     = saved.envelopePrefix; }
+  if (saved.envelopeSuffix     !== undefined) { envFields.suffix.value     = saved.envelopeSuffix; }
+  if (saved.envelopeLinePrefix !== undefined) { envFields.linePrefix.value = saved.envelopeLinePrefix; }
+  if (saved.envelopeLineSuffix !== undefined) { envFields.lineSuffix.value = saved.envelopeLineSuffix; }
 
   function persistPrefs() {
-    vscode.setState({ server: serverEl.value, encoding: encEl.value, envelope: envEl.value });
+    vscode.setState({
+      server: serverEl.value,
+      encoding: encEl.value,
+      envelope: envEl.value,
+      envelopePrefix:     envFields.prefix.value,
+      envelopeSuffix:     envFields.suffix.value,
+      envelopeLinePrefix: envFields.linePrefix.value,
+      envelopeLineSuffix: envFields.lineSuffix.value,
+    });
   }
   serverEl.addEventListener('input', persistPrefs);
   encEl.addEventListener('change', persistPrefs);
   envEl.addEventListener('change', persistPrefs);
+
+  // ---------------------------------------------------------------------
+  // Envelope editor: prefilling, modified-state, reset, inline notice
+  // ---------------------------------------------------------------------
+
+  function presetFor(id) {
+    return PRESETS[id] || PRESETS['none'];
+  }
+
+  function currentPreset() {
+    return presetFor(envEl.value || 'none');
+  }
+
+  function isFieldModified(field) {
+    return envFields[field].value !== currentPreset()[field];
+  }
+
+  function refreshResetButtons() {
+    envResets.prefix.hidden     = !isFieldModified('prefix');
+    envResets.suffix.hidden     = !isFieldModified('suffix');
+    envResets.linePrefix.hidden = !isFieldModified('linePrefix');
+    envResets.lineSuffix.hidden = !isFieldModified('lineSuffix');
+  }
+
+  function showPresetNotice(text) {
+    if (!envNotice) { return; }
+    envNotice.textContent = text;
+    envNotice.hidden = false;
+    if (envNotice._timer) { clearTimeout(envNotice._timer); }
+    envNotice._timer = setTimeout(function () { envNotice.hidden = true; }, 3000);
+  }
+
+  function fieldsMatchPreset() {
+    var p = currentPreset();
+    return envFields.prefix.value     === p.prefix
+        && envFields.suffix.value     === p.suffix
+        && envFields.linePrefix.value === p.linePrefix
+        && envFields.lineSuffix.value === p.lineSuffix;
+  }
+
+  function applyPreset(id, opts) {
+    var p = presetFor(id);
+    envFields.prefix.value     = p.prefix;
+    envFields.suffix.value     = p.suffix;
+    envFields.linePrefix.value = p.linePrefix;
+    envFields.lineSuffix.value = p.lineSuffix;
+    refreshResetButtons();
+    if (opts && opts.notice && !fieldsMatchPreset()) {
+      var labels = {
+        'none':     'None (raw)',
+        'hl7-mllp': 'HL7 v2 (MLLP framing)',
+        'hl7-llp':  'HL7 v2 (raw LLP)',
+      };
+      showPresetNotice('Replaced with ' + (labels[id] || id) + ' preset.');
+    }
+  }
+
+  // Switching the dropdown auto-fills the fields. We skip the notice if the
+  // user just re-picks the same preset or if the fields already match.
+  envEl.addEventListener('change', function () {
+    var wasModified = !fieldsMatchPreset();
+    applyPreset(envEl.value, { notice: true });
+    if (wasModified) {
+      persistPrefs();
+    } else {
+      persistPrefs();
+    }
+  });
+
+  // Editing a field toggles its reset button (hidden when equal to preset).
+  ['prefix', 'suffix', 'linePrefix', 'lineSuffix'].forEach(function (f) {
+    envFields[f].addEventListener('input', function () {
+      envResets[f].hidden = !isFieldModified(f);
+      persistPrefs();
+    });
+  });
+
+  // Per-field reset ↺ buttons: revert to the current preset's default.
+  ['prefix', 'suffix', 'linePrefix', 'lineSuffix'].forEach(function (f) {
+    envResets[f].addEventListener('click', function () {
+      envFields[f].value = currentPreset()[f];
+      envResets[f].hidden = true;
+      persistPrefs();
+    });
+  });
+
+  // After restoring persisted state, sync reset-button visibility.
+  refreshResetButtons();
+
   // Ask the extension for the last persisted message so it survives VS
   // Code restarts. The reply (see 'persistedMessage' handler below)
   // populates the textarea on load.
@@ -799,7 +1010,16 @@ export class TcpPanel {
     if (connState !== 'connected') { return; }
     var text = msgEl.value;
     if (!text) { return; }
-    vscode.postMessage({ type: 'send', message: text, encoding: encEl.value, envelope: envEl.value || 'none' });
+    vscode.postMessage({
+      type: 'send',
+      message: text,
+      encoding: encEl.value,
+      envelopeId: envEl.value || 'none',
+      envelopePrefix:     envFields.prefix.value,
+      envelopeSuffix:     envFields.suffix.value,
+      envelopeLinePrefix: envFields.linePrefix.value,
+      envelopeLineSuffix: envFields.lineSuffix.value,
+    });
   }
 
   sendEl.addEventListener('click', doSend);
@@ -1005,26 +1225,10 @@ export class TcpPanel {
       setUiState('disconnected');
       appendLog('err', '\u26a0', m.message);
     } else if (m.type === 'envelopes') {
-      // Refresh the dropdown so that custom envelopes added in
-      // settings.json between sessions become available. Preserve the
-      // currently selected id if it's still in the new list; otherwise
-      // fall back to 'none'.
-      var prev = envEl.value;
-      envEl.innerHTML = '';
-      var found = false;
-      for (var i = 0; i < m.envelopes.length; i++) {
-        var opt = document.createElement('option');
-        opt.value = m.envelopes[i].id;
-        opt.textContent = m.envelopes[i].label;
-        envEl.appendChild(opt);
-        if (m.envelopes[i].id === prev) { found = true; }
-      }
-      if (found) {
-        envEl.value = prev;
-      } else {
-        envEl.value = 'none';
-        persistPrefs();
-      }
+      // The dropdown is server-rendered with built-ins only; no client-side
+      // rebuild needed. (Previously this handler merged in custom envelopes
+      // from settings.json — those are gone in 0.2.1; users edit bytes
+      // directly via the always-visible fields.)
     } else if (m.type === 'variables') {
       varsState = { custom: m.custom || [] };
       renderVars();
@@ -1053,17 +1257,15 @@ export class TcpPanel {
 
   // Sync state on load (handles panel restore after VS Code restart)
   vscode.postMessage({ type: 'getState' });
-  // Also fetch the envelope list, in case the user added new custom
-  // envelopes in settings.json since the panel was last opened. The
-  // server-rendered HTML already shows the list, but this picks up
-  // changes made between sessions.
-  vscode.postMessage({ type: 'getEnvelopes' });
-  // And fetch the current variables state (custom list, format, live
-  // timestamp value) so the Variables section is populated immediately.
+  // Fetch the current variables state (custom list, format, live timestamp
+  // value) so the Variables section is populated immediately. Envelopes
+  // are server-rendered with built-ins only; no round-trip needed.
   vscode.postMessage({ type: 'getVariables' });
 })();
 </script>
 </body>
-</html>`;
+</html>`.replace('__PRESETS_PLACEHOLDER__', JSON.stringify(
+      Object.fromEntries(listBuiltin().map((e) => [e.id, e.spec]))
+    ));
   }
 }
