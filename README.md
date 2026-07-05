@@ -17,9 +17,10 @@ Enter `host:port`, hit Connect. A status dot shows connection state at a glance 
 Plain text in UTF-8, ASCII, Latin-1, or UTF-16 LE. Binary data via escape sequences: `\xFF`, `\x00`, `\n`, `\r`, `\t`, `\\`. Press **Ctrl+Enter** to send.
 
 **🔤 Variable interpolation**
-Reference `{{name}}` values in the message area — built-in `{{timestamp}}`
-and your own user-defined variables. Live-updating timestamp, user
-variables editable in the Variables section, format configurable.
+Reference `{{name}}` values in the message area — built-in `{{timestamp}}`,
+`{{seq}}`, `{{uuid}}`, plus your own user-defined variables. Format
+timestamps inline with `{{timestamp|FORMAT}}`. User variables editable
+in the Variables section.
 
 **📋 Timestamped response log**
 Every response is logged with a precise timestamp and round-trip response time in milliseconds.
@@ -60,25 +61,34 @@ Insert computed values into outgoing messages with `{{name}}` references.
 The text is resolved **before** encoding and framing, so the response log
 shows the actual bytes that hit the socket.
 
-#### Built-in: timestamp
+#### Built-in variables
 
-`{{timestamp}}` inserts the current time, formatted with the pattern in
-the **Format** input at the top of the Variables section. Default: ISO 8601
-(`YYYY-MM-DDTHH:mm:ss.sssZ`). Supported tokens:
+Three built-ins are always present and cannot be deleted:
 
-| Token | Meaning           |
-|-------|-------------------|
-| YYYY  | Year (4 digits)   |
-| MM    | Month (01-12)     |
-| DD    | Day (01-31)       |
-| HH    | Hour (00-23)      |
-| mm    | Minute (00-59)    |
-| ss    | Second (00-59)    |
-| sss   | Millisecond       |
-| Z     | `Z` (UTC marker)  |
+| Name         | Value                                              |
+|--------------|----------------------------------------------------|
+| `{{timestamp}}` | Current UTC time (default format from settings)   |
+| `{{seq}}`       | Per-session counter, starts at 1, increments on each send |
+| `{{uuid}}`      | Fresh RFC 4122 v4 UUID per substitution            |
 
-Other characters in the format string are treated as literals (so
-`YYYY-MM-DD HH:mm:ss` produces `2026-07-05 14:23:45`).
+**Format override for `{{timestamp}}`:** use the pipe syntax — `{{timestamp|FORMAT}}` renders the time with FORMAT instead of the default. Available tokens: YYYY, MM, DD, HH, mm, ss, sss, Z (literal UTC marker), X (Unix epoch seconds), x (Unix epoch milliseconds).
+
+#### Pipe syntax
+
+`{{name|format}}` overrides the format for the built-in `{{timestamp}}`.
+The pipe is silently ignored for `{{seq}}`, `{{uuid}}`, and user-defined
+variables (treated as noise).
+
+Examples:
+
+- `{{timestamp|YYYY-MM-DD}}` → `2026-07-05`
+- `{{timestamp|HH:mm:ss}}` → `13:45:23`
+- `{{timestamp|X}}` → `1783259123` (epoch seconds)
+- `{{seq|anything}}` → just `1` (pipe ignored)
+- `{{user.name|ignored}}` → just `ryu` (pipe ignored)
+
+The default format when no pipe is present is `tcpClient.variables.timestampFormat`
+in settings.json (default ISO 8601).
 
 #### User variables
 
@@ -114,9 +124,7 @@ the MLLP VT/FS+CR framing.
 
 #### Unknown variables
 
-If a message references `{{name}}` that is not defined, the reference is
-left in the output and a warning is logged in the developer console. No
-send is blocked.
+If a message references `{{name}}` or `{{name|anything}}` that is not defined, the reference is left in the output (including the pipe, if any) and a warning is logged in the developer console. No send is blocked.
 
 #### Sending literal `{{name}}` in a message
 
