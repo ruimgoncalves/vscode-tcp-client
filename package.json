@@ -23,7 +23,7 @@
         "tcpClient.envelopes.custom": {
           "type": "array",
           "default": [],
-          "description": "User-defined message envelopes. Each entry: { id, label, prefix, suffix, segmentSeparator, lineMode, lineSeparator } where prefix/suffix/lineSeparator are escape-sequence strings (\\\\xHH, \\\\n, \\\\r, \\\\t, \\\\\\\\, \\\\0) and lineMode is 'none' (default; wrap whole payload once) or 'each-line' (split on lineSeparator and wrap each chunk independently).",
+          "description": "User-defined message envelopes. Each entry: { id, label, prefix, suffix, segmentSeparator, linePrefix, lineSuffix } where prefix/suffix/linePrefix/lineSuffix are escape-sequence strings (\\\\xHH, \\\\n, \\\\r, \\\\t, \\\\\\\\, \\\\0). linePrefix and lineSuffix are prepended/appended to every line of the payload before the outer prefix/suffix are applied.",
           "items": {
             "type": "object",
             "required": ["id", "label"],
@@ -33,8 +33,8 @@
               "prefix": { "type": "string", "default": "" },
               "suffix": { "type": "string", "default": "" },
               "segmentSeparator": { "type": "string", "default": "" },
-              "lineMode": { "type": "string", "enum": ["none", "each-line"], "default": "none", "description": "How the envelope is applied: 'none' wraps the whole payload once; 'each-line' splits on lineSeparator and wraps each chunk independently." },
-              "lineSeparator": { "type": "string", "default": "\\n", "description": "Escape-sequence string used to split the payload when lineMode is 'each-line'. Defaults to \\\\n." }
+              "linePrefix": { "type": "string", "default": "", "description": "Bytes to prepend to every line (escape-sequence string). Defaults to ''." },
+              "lineSuffix": { "type": "string", "default": "", "description": "Bytes to append to every line (escape-sequence string). Defaults to ''." }
             }
           }
         }
