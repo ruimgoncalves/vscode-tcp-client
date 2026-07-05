@@ -4,12 +4,13 @@ import { encodeMessage, formatBytes, TextEncoding } from './MessageEncoder';
 import { getAll, resolve, wrap, Envelope } from './envelopes/Envelope';
 import {
   getAll as getAllVariables,
-  formatTimestamp,
   substitute,
-  DEFAULT_TIMESTAMP_FORMAT,
   Variable,
   VariableDef,
 } from './variables/Variables';
+// formatTimestamp + DEFAULT_TIMESTAMP_FORMAT dropped in v2: the format
+// input + live timestamp display moved out of the webview (format lives
+// in the message text via {{timestamp|FMT}} — see Task A).
 
 interface WebviewMessage {
   type:
@@ -19,14 +20,14 @@ interface WebviewMessage {
     | 'getState'
     | 'getEnvelopes'
     | 'getVariables'
-    | 'setTimestampFormat'
     | 'addVariable'
-    | 'deleteVariable';
+    | 'deleteVariable'
+    | 'persistMessage'
+    | 'getPersistedMessage';
   server?: string;
   message?: string;
   encoding?: string;
   envelope?: string;
-  format?: string;
   name?: string;
   value?: string;
 }
@@ -52,10 +53,17 @@ export class TcpPanel {
   private readonly _panel: vscode.WebviewPanel;
   private readonly _tcpClient: TcpClient;
   private readonly _disposables: vscode.Disposable[] = [];
+  private readonly _ctx: vscode.ExtensionContext;
   private _server = '';
   private _lastSendTime: number | null = null;
+  // Per-panel sequence counter. Starts at 1 when the panel is created
+  // and increments by 1 after each successful tcpClient.send() call.
+  // {{seq}} is substituted with the current value, then the counter
+  // advances for the next send. Resets on every panel open because
+  // TcpPanel.currentPanel is replaced when a new instance is built.
+  private _seq: number = 1;
 
-  static createOrShow(extensionUri: vscode.Uri): void {
+  static createOrShow(extensionUri: vscode.Uri, extensionContext: vscode.ExtensionContext): void {
     const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
     if (TcpPanel.currentPanel) {
       TcpPanel.currentPanel._panel.reveal(column);
@@ -67,11 +75,12 @@ export class TcpPanel {
       column,
       { enableScripts: true, retainContextWhenHidden: true }
     );
-    TcpPanel.currentPanel = new TcpPanel(panel, extensionUri);
+    TcpPanel.currentPanel = new TcpPanel(panel, extensionUri, extensionContext);
   }
 
-  private constructor(panel: vscode.WebviewPanel, _extensionUri: vscode.Uri) {
+  private constructor(panel: vscode.WebviewPanel, _extensionUri: vscode.Uri, extensionContext: vscode.ExtensionContext) {
     this._panel = panel;
+    this._ctx = extensionContext;
     this._tcpClient = new TcpClient();
     this._panel.webview.html = this._getHtmlForWebview(panel.webview);
 
@@ -133,7 +142,9 @@ export class TcpPanel {
           // Resolve {{name}} references BEFORE encoding so the bytes
           // written to the socket contain the substituted values. The
           // response log therefore shows what was actually sent.
-          const substituted = substitute(msg.message ?? '', getAllVariables());
+          // {{seq}} draws from the panel's per-session counter, which
+          // is read here and advanced below after the send succeeds.
+          const substituted = substitute(msg.message ?? '', getAllVariables(), new Date(), { seq: this._seq });
           let buf = encodeMessage(substituted, msg.encoding as TextEncoding ?? 'utf8');
           // Resolve the requested envelope and wrap the payload. An unknown
           // id is treated as an error: post it to the webview and skip the
@@ -149,6 +160,11 @@ export class TcpPanel {
           buf = wrap(buf, envelope.spec);
           this._tcpClient.send(buf);
           this._lastSendTime = Date.now();
+          // Advance the seq counter only on a successful send. Failures
+          // (envelope resolution, encoding error, socket error) must NOT
+          // skip a number; the user's next attempt should get the next
+          // value, not "fill in" the skipped one.
+          this._seq += 1;
           this._panel.webview.postMessage({
             type: 'sent',
             display: formatBytes(buf),
@@ -166,6 +182,23 @@ export class TcpPanel {
           server: this._server,
         });
         break;
+      case 'getPersistedMessage':
+        // Send the last-saved message text back to the webview so it
+        // can restore the textarea on panel open. The webview requests
+        // this explicitly (rather than reading from vscode.getState())
+        // because globalState lives on the extension host, not in the
+        // webview context.
+        this._panel.webview.postMessage({
+          type: 'persistedMessage',
+          message: this._ctx.globalState.get<string>('message', ''),
+        });
+        break;
+      case 'persistMessage':
+        // Fire-and-forget: input events are frequent and globalState.update
+        // is cheap, but `void` swallows the Thenable cleanly. An empty
+        // string is a valid persisted state (user-cleared textarea).
+        void this._ctx.globalState.update('message', msg.message ?? '');
+        break;
       case 'getEnvelopes':
         this._panel.webview.postMessage({
           type: 'envelopes',
@@ -175,18 +208,6 @@ export class TcpPanel {
       case 'getVariables':
         this._sendVariablesState();
         break;
-      case 'setTimestampFormat': {
-        // Persist the new format. The substitute() call reads the live
-        // setting on every send, so the next message already uses it.
-        const format = msg.format ?? '';
-        await vscode.workspace.getConfiguration('tcpClient').update(
-          'variables.timestampFormat',
-          format,
-          vscode.ConfigurationTarget.Global
-        );
-        this._sendVariablesState();
-        break;
-      }
       case 'addVariable': {
         const name = (msg.name ?? '').trim();
         const value = msg.value ?? '';
@@ -241,10 +262,9 @@ export class TcpPanel {
   }
 
   /**
-   * Push the current variables state (custom list + current format +
-   * the live formatted timestamp value) to the webview. Called on
-   * panel load and after every successful mutation so the UI stays in
-   * sync with settings.json without needing its own timestamp formatter.
+   * Push the current custom-variable list to the webview. Called on
+   * panel load and after every successful add/delete so the UI stays
+   * in sync with settings.json.
    */
   private _sendVariablesState(): void {
     const all = getAllVariables();
@@ -252,14 +272,9 @@ export class TcpPanel {
       name: v.name,
       value: v.value,
     }));
-    const format = vscode.workspace
-      .getConfiguration('tcpClient')
-      .get<string>('variables.timestampFormat', DEFAULT_TIMESTAMP_FORMAT);
     this._panel.webview.postMessage({
       type: 'variables',
       custom,
-      timestampFormat: format,
-      timestampValue: formatTimestamp(new Date(), format),
     });
   }
 
@@ -411,18 +426,6 @@ export class TcpPanel {
   .var-add input { flex: 1; min-width: 0; }
   .var-add input.name { flex: 0 0 100px; }
   .var-add button { flex-shrink: 0; }
-  .var-format {
-    display: flex; align-items: center; gap: 6px;
-  }
-  .var-format label { min-width: 0; }
-  .var-format input { flex: 1; }
-  .var-ts-val {
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: var(--vscode-editor-font-size, 13px);
-    color: var(--vscode-foreground);
-    flex: 1; min-width: 0;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
 </style>
 </head>
 <body>
@@ -455,9 +458,8 @@ export class TcpPanel {
   <div class="row">
     <span class="sec-label">Message</span>
   </div>
-  <textarea id="msg" placeholder="Type message...&#10;Escape sequences: \\xHH (raw byte), \\n \\r \\t (control), \\\\ (backslash)"></textarea>
+  <textarea id="msg" placeholder="Type message... Use {{name}} for your variables, {{timestamp|format}} for time, {{seq}} for sequence, {{uuid}} for unique id."></textarea>
   <div class="row">
-    <span class="hint">Ctrl+Enter to send. <code>{{name}}</code> is substituted before encoding.</span>
     <button id="sendBtn" disabled>Send</button>
   </div>
 </div>
@@ -465,14 +467,6 @@ export class TcpPanel {
 <div class="vars-wrap">
   <div class="row">
     <span class="sec-label">Variables</span>
-  </div>
-  <div class="var-format">
-    <label for="tsFormat">Format</label>
-    <input id="tsFormat" type="text" spellcheck="false" autocomplete="off" placeholder="YYYY-MM-DDTHH:mm:ss.sssZ">
-  </div>
-  <div class="row">
-    <label>timestamp</label>
-    <span id="tsValue" class="var-ts-val">&mdash;</span>
   </div>
   <div id="varsBody" class="vars-body"></div>
   <div class="var-add">
@@ -502,32 +496,37 @@ export class TcpPanel {
   var sendEl    = document.getElementById('sendBtn');
   var clearEl   = document.getElementById('clearBtn');
   var logEl     = document.getElementById('log');
-  var tsFormatEl = document.getElementById('tsFormat');
-  var tsValueEl  = document.getElementById('tsValue');
   var varsBodyEl = document.getElementById('varsBody');
   var newVarNameEl  = document.getElementById('newVarName');
   var newVarValueEl = document.getElementById('newVarValue');
   var addVarBtnEl   = document.getElementById('addVarBtn');
   var connState = 'disconnected';
-  // Holds the most recent variables snapshot from the extension. The
-  // format input only writes its value back to the DOM when it differs
-  // from what the user has typed, to avoid clobbering an in-flight edit.
-  var varsState = { custom: [], timestampFormat: '', timestampValue: '' };
+  // Holds the most recent variables snapshot from the extension.
+  var varsState = { custom: [] };
 
-  // Restore persisted state from previous session
+  // Restore session-scoped preferences from the webview state
+  // (vscode.setState survives hide/show of the panel within a VS Code
+  // session, but dies with the webview on restart — fine for transient
+  // dropdown selections).
+  //
+  // The message text is intentionally NOT restored here: it comes from
+  // extensionContext.globalState via a getPersistedMessage round-trip
+  // below, so it survives VS Code restarts.
   var saved = vscode.getState() || {};
   if (saved.server)   { serverEl.value = saved.server; }
   if (saved.encoding) { encEl.value    = saved.encoding; }
   if (saved.envelope) { envEl.value    = saved.envelope; }
-  if (saved.message)  { msgEl.value    = saved.message; }
 
-  function persist() {
-    vscode.setState({ server: serverEl.value, encoding: encEl.value, envelope: envEl.value, message: msgEl.value });
+  function persistPrefs() {
+    vscode.setState({ server: serverEl.value, encoding: encEl.value, envelope: envEl.value });
   }
-  serverEl.addEventListener('input', persist);
-  encEl.addEventListener('change', persist);
-  envEl.addEventListener('change', persist);
-  msgEl.addEventListener('input', persist);
+  serverEl.addEventListener('input', persistPrefs);
+  encEl.addEventListener('change', persistPrefs);
+  envEl.addEventListener('change', persistPrefs);
+  // Ask the extension for the last persisted message so it survives VS
+  // Code restarts. The reply (see 'persistedMessage' handler below)
+  // populates the textarea on load.
+  vscode.postMessage({ type: 'getPersistedMessage' });
 
   function setUiState(s) {
     connState = s;
@@ -597,7 +596,9 @@ export class TcpPanel {
   // Variables section
   // -------------------------------------------------------------------------
   function renderVars() {
-    // Custom list (the built-in timestamp is shown above as a separate row).
+    // Custom variable list only — built-in variables (timestamp, seq, uuid)
+    // are documented in the message textarea placeholder, not listed here,
+    // because they're not user-editable.
     varsBodyEl.innerHTML = '';
     if (varsState.custom.length === 0) {
       var empty = document.createElement('div');
@@ -626,25 +627,7 @@ export class TcpPanel {
         varsBodyEl.appendChild(row);
       }
     }
-    // Format input — only update the DOM value when it differs from
-    // what the user has typed, to avoid clobbering an in-flight edit.
-    if (document.activeElement !== tsFormatEl && tsFormatEl.value !== varsState.timestampFormat) {
-      tsFormatEl.value = varsState.timestampFormat;
-    }
-    tsValueEl.textContent = varsState.timestampValue || '\u2014';
   }
-
-  // Debounced format update: 200 ms after the last keystroke, post the
-  // current value of the input. Clears any pending timer on each new
-  // keystroke so we only post on settle.
-  var formatDebounceTimer = null;
-  tsFormatEl.addEventListener('input', function () {
-    if (formatDebounceTimer !== null) { clearTimeout(formatDebounceTimer); }
-    formatDebounceTimer = setTimeout(function () {
-      formatDebounceTimer = null;
-      vscode.postMessage({ type: 'setTimestampFormat', format: tsFormatEl.value });
-    }, 200);
-  });
 
   addVarBtnEl.addEventListener('click', function () {
     var name = newVarNameEl.value.trim();
@@ -661,13 +644,6 @@ export class TcpPanel {
   newVarNameEl.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') { e.preventDefault(); addVarBtnEl.click(); }
   });
-
-  // Refresh the live timestamp value once a second by asking the
-  // extension. The format string lives in one place (the extension) so
-  // the webview doesn't need its own date formatter.
-  setInterval(function () {
-    vscode.postMessage({ type: 'getVariables' });
-  }, 1000);
 
   window.addEventListener('message', function (ev) {
     var m = ev.data;
@@ -708,16 +684,26 @@ export class TcpPanel {
         envEl.value = prev;
       } else {
         envEl.value = 'none';
-        persist();
+        persistPrefs();
       }
     } else if (m.type === 'variables') {
-      varsState = {
-        custom: m.custom || [],
-        timestampFormat: m.timestampFormat || '',
-        timestampValue: m.timestampValue || '',
-      };
+      varsState = { custom: m.custom || [] };
       renderVars();
+    } else if (m.type === 'persistedMessage') {
+      // Populate the textarea with the last-saved message text on load.
+      // We only honour the reply once; subsequent edits live in
+      // globalState via the persistMessage input handler below.
+      if (!msgEl.value) {
+        msgEl.value = m.message || '';
+      }
     }
+  });
+
+  // Persist the message text on every input event. Stored in
+  // extensionContext.globalState on the extension host so it survives
+  // VS Code restarts. Fire-and-forget on the extension side.
+  msgEl.addEventListener('input', function () {
+    vscode.postMessage({ type: 'persistMessage', message: msgEl.value });
   });
 
   // Sync state on load (handles panel restore after VS Code restart)

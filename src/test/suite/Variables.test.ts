@@ -354,6 +354,76 @@ suite('TcpPanel.send – variable substitution before encode+wrap', function () 
       'bytes on the socket must contain the substituted value, not the {{name}} reference'
     );
   });
+
+  test('{{seq}} is substituted using the panel\'s seq counter, incremented on each send', async () => {
+    // The seq counter is shared across tests in this suite (the panel
+    // is reopened once, not per-test). Reset it to a known value at
+    // the start of this test so the assertions don't depend on what
+    // ran before.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (panel as any)._seq = 1;
+
+    // Send three messages in quick succession. Each one should
+    // capture the current _seq (1, 2, 3), and after each send the
+    // counter should advance.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (panel as any)._handleWebviewMessage({
+      type: 'send',
+      message: 'seq={{seq}}',
+      encoding: 'utf8',
+      envelope: 'none',
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    assert.strictEqual(
+      (panel as any)._seq,
+      2,
+      'after first send the seq counter should be 2'
+    );
+    assert.strictEqual(stub.sent[stub.sent.length - 1].toString('utf8'), 'seq=1');
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (panel as any)._handleWebviewMessage({
+      type: 'send',
+      message: 'seq={{seq}}',
+      encoding: 'utf8',
+      envelope: 'none',
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    assert.strictEqual(
+      (panel as any)._seq,
+      3,
+      'after second send the seq counter should be 3'
+    );
+    assert.strictEqual(stub.sent[stub.sent.length - 1].toString('utf8'), 'seq=2');
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (panel as any)._handleWebviewMessage({
+      type: 'send',
+      message: 'seq={{seq}}',
+      encoding: 'utf8',
+      envelope: 'none',
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    assert.strictEqual(
+      (panel as any)._seq,
+      4,
+      'after third send the seq counter should be 4'
+    );
+    assert.strictEqual(stub.sent[stub.sent.length - 1].toString('utf8'), 'seq=3');
+
+    // The first three captured buffers (this test's three sends, since
+    // the previous test added one too — confirm via the last three) hold
+    // seq=1, seq=2, seq=3 in order.
+    const tail = stub.sent.slice(-3).map((b) => b.toString('utf8'));
+    assert.deepStrictEqual(tail, ['seq=1', 'seq=2', 'seq=3']);
+  });
+
+  // NOTE: globalState-driven "message text persists across panel
+  // close+reopen" is intentionally not unit-tested here. globalState
+  // is per-extension-context, and the panel created in setup() above
+  // shares that context — there's no clean way to dispose+reopen in
+  // isolation without invasive globals. The `.hermes-plan-variables-pipe.md`
+  // manual smoke test covers this end-to-end.
 });
 
 // ---------------------------------------------------------------------------

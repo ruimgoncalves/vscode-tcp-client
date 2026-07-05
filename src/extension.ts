@@ -10,7 +10,7 @@ import './variables/builtins';
 export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('tcpClient.openPanel', () => {
-      TcpPanel.createOrShow(context.extensionUri);
+      TcpPanel.createOrShow(context.extensionUri, context);
     })
   );
 }
