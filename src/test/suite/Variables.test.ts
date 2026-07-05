@@ -1,9 +1,11 @@
 import * as assert from 'assert';
+import * as vscode from 'vscode';
 import {
   substitute,
   lookup,
   formatTimestamp,
   listBuiltin,
+  getAll,
   Variable,
   _registerBuiltin,
   _clearAllForTests,
@@ -80,17 +82,27 @@ suite('Variables – substitute', () => {
     assert.strictEqual(result, 'at 2026-07-05T13:45:23.000Z');
   });
 
-  test('{{timestamp}} with a custom format uses that format', () => {
-    // Override the seed built-in with a different format
-    _registerBuiltin({
-      name: 'timestamp',
-      value: '',
-      format: 'YYYY/MM/DD',
-      builtin: true,
-    });
-    const vars = listBuiltin();
-    const result = substitute('{{timestamp}}', vars, FIXED_NOW);
-    assert.strictEqual(result, '2026/07/05');
+  test('{{timestamp}} with a custom format uses that format', async () => {
+    // Override the live tcpClient.variables.timestampFormat setting —
+    // substitute() reads this setting fresh on every call (Task 1 commit 2e13504),
+    // so the user-configured format takes precedence over the seed built-in format.
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'variables.timestampFormat',
+      'YYYY/MM/DD',
+      vscode.ConfigurationTarget.Global
+    )
+    try {
+      const vars = listBuiltin()
+      const result = substitute('{{timestamp}}', vars, FIXED_NOW)
+      assert.strictEqual(result, '2026/07/05')
+    } finally {
+      // Reset to default so subsequent tests are unaffected.
+      await vscode.workspace.getConfiguration('tcpClient').update(
+        'variables.timestampFormat',
+        undefined,
+        vscode.ConfigurationTarget.Global
+      )
+    }
   });
 
   test('unknown variable is left as {{name}} and a console.warn is emitted', () => {
@@ -215,4 +227,54 @@ suite('formatTimestamp', () => {
       restore();
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// Live configuration — proves the package.json schema entries are wired up
+// and `Variables.ts` reads them at substitution time.
+// ---------------------------------------------------------------------------
+
+suite('Variables – live configuration', () => {
+
+  setup(() => { _clearAllForTests(); _loadBuiltinsForTests(); });
+  teardown(() => { _clearAllForTests(); });
+
+  test('getCustom reads tcpClient.variables.custom from settings and substitute uses it', async () => {
+    // Set the custom variables setting
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'variables.custom',
+      [{ name: 'user.name', value: 'ryu' }, { name: 'host', value: 'server-01' }],
+      vscode.ConfigurationTarget.Global
+    )
+
+    // Re-read; getCustom must pick up the new value
+    const all = getAll()
+    const result = substitute('Hello {{user.name}} from {{host}}', all, FIXED_NOW)
+    assert.strictEqual(result, 'Hello ryu from server-01')
+
+    // Clean up
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'variables.custom',
+      [],
+      vscode.ConfigurationTarget.Global
+    )
+  })
+
+  test('tcpClient.variables.timestampFormat setting is applied to {{timestamp}}', async () => {
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'variables.timestampFormat',
+      'YYYY/MM/DD',
+      vscode.ConfigurationTarget.Global
+    )
+
+    const all = getAll()
+    const result = substitute('{{timestamp}}', all, FIXED_NOW)
+    assert.strictEqual(result, '2026/07/05')
+
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'variables.timestampFormat',
+      undefined,  // reset to default
+      vscode.ConfigurationTarget.Global
+    )
+  })
 });

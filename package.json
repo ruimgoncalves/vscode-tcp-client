@@ -36,6 +36,16 @@
               "lineSuffix": { "type": "string", "default": "", "description": "Bytes to append to every line (escape-sequence string). Defaults to ''." }
             }
           }
+        },
+        "tcpClient.variables.custom": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "User-defined variables that can be inserted into outgoing messages via `{{name}}` syntax. Each entry has a `name` (the reference) and a `value` (the literal substitution). Built-in variables like `{{timestamp}}` are always available and cannot be overridden."
+        },
+        "tcpClient.variables.timestampFormat": {
+          "type": "string",
+          "default": "YYYY-MM-DDTHH:mm:ss.sssZ",
+          "markdownDescription": "Format pattern for the built-in `{{timestamp}}` variable. Supports `YYYY` (year), `MM` (month), `DD` (day), `HH` (hour), `mm` (minute), `ss` (second), `sss` (millisecond), and `Z` (UTC marker). Other characters are treated as literals. Default: ISO 8601 with milliseconds."
         }
       }
     }
