@@ -544,4 +544,26 @@ suite('Variables – v2 pipe syntax', () => {
       '2026-07-05 ' + Math.floor(FIXED_NOW.getTime() / 1000).toString()
     );
   });
+
+  test('{{timestamp|}} with empty pipe falls back to the live setting', async () => {
+    // Set the live timestamp format to something distinct so we can verify
+    // the empty-pipe path reads it instead of the default ISO 8601.
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'variables.timestampFormat',
+      'YYYY/MM/DD',
+      vscode.ConfigurationTarget.Global
+    )
+    try {
+      const vars = getAll()
+      const result = substitute('{{timestamp|}}', vars, FIXED_NOW)
+      assert.strictEqual(result, '2026/07/05')
+    } finally {
+      // Reset to default so subsequent tests are unaffected.
+      await vscode.workspace.getConfiguration('tcpClient').update(
+        'variables.timestampFormat',
+        undefined,
+        vscode.ConfigurationTarget.Global
+      )
+    }
+  });
 });
