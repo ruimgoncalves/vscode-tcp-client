@@ -4,11 +4,90 @@ import { encodeMessage, formatBytes, TextEncoding } from './MessageEncoder';
 import { getAll, resolve, wrap, Envelope } from './envelopes/Envelope';
 
 interface WebviewMessage {
-  type: 'connect' | 'disconnect' | 'send' | 'getState' | 'getEnvelopes';
+  type: 'connect' | 'disconnect' | 'send' | 'getState' | 'getEnvelopes' | 'getSyntaxHelp';
   server?: string;
   message?: string;
   encoding?: string;
   envelope?: string;
+}
+
+/** A user-defined variable entry from `tcpClient.variables.custom`. */
+export interface UserVariable {
+  name: string;
+  value: string;
+}
+
+/**
+ * Minimal timestamp formatter used for the syntax-help modal's live
+ * preview. Supports the tokens YYYY MM DD HH mm ss sss. We don't need
+ * timezone-aware formatting here — this is just a quick preview.
+ */
+export function formatTimestampPreview(date: Date, format: string): string {
+  const p2 = (n: number): string => (n < 10 ? '0' + n : '' + n);
+  const p3 = (n: number): string => (n < 10 ? '00' + n : n < 100 ? '0' + n : '' + n);
+  const tokens: Record<string, string> = {
+    YYYY: '' + date.getFullYear(),
+    MM:   p2(date.getMonth() + 1),
+    DD:   p2(date.getDate()),
+    HH:   p2(date.getHours()),
+    mm:   p2(date.getMinutes()),
+    ss:   p2(date.getSeconds()),
+    sss:  p3(date.getMilliseconds()),
+  };
+  // Order tokens longest-first so `sss` is consumed before `ss`, and
+  // `mm` before `m` if we ever add a single-letter token.
+  return format.replace(/YYYY|MM|DD|HH|mm|sss|ss/g, (t) => tokens[t]);
+}
+
+/**
+ * Reads the current user-defined variables from configuration. Returns
+ * an empty array when the setting is missing or malformed.
+ */
+export function readUserVariables(): UserVariable[] {
+  const cfg = vscode.workspace.getConfiguration('tcpClient');
+  const raw = cfg.get<unknown>('variables.custom');
+  if (!Array.isArray(raw)) { return []; }
+  const out: UserVariable[] = [];
+  for (const entry of raw) {
+    if (entry && typeof entry === 'object' && 'name' in entry && 'value' in entry) {
+      const e = entry as { name: unknown; value: unknown };
+      if (typeof e.name === 'string' && typeof e.value === 'string') {
+        out.push({ name: e.name, value: e.value });
+      }
+    }
+  }
+  return out;
+}
+
+/** Builds the payload returned by the `getSyntaxHelp` handler. Exposed
+ *  (module-scope) so tests can verify the shape without a real webview. */
+export function buildSyntaxHelpPayload(): {
+  type: 'syntaxHelp';
+  escapes: { seq: string; meaning: string }[];
+  builtins: { syntax: string; description: string; preview: string }[];
+  userVars: UserVariable[];
+} {
+  const now = new Date();
+  return {
+    type: 'syntaxHelp',
+    escapes: [
+      { seq: '\\xHH', meaning: 'Raw byte (hex), e.g. \\xFF' },
+      { seq: '\\n',   meaning: 'Newline (0x0A)' },
+      { seq: '\\r',   meaning: 'Carriage return (0x0D)' },
+      { seq: '\\t',   meaning: 'Tab (0x09)' },
+      { seq: '\\\\',  meaning: 'Literal backslash' },
+      { seq: '\\0',   meaning: 'Null byte (0x00)' },
+      { seq: '\\{',   meaning: 'Literal open brace (lets you send {{name}} text)' },
+      { seq: '\\}',   meaning: 'Literal close brace' },
+    ],
+    builtins: [
+      { syntax: '{{timestamp}}',         description: 'Current UTC time, default format from tcpClient.variables.timestampFormat', preview: formatTimestampPreview(now, 'YYYY-MM-DD HH:mm:ss') },
+      { syntax: '{{timestamp|FORMAT}}',  description: 'Time with FORMAT (YYYY MM DD HH mm ss sss)',                                preview: formatTimestampPreview(now, 'YYYY-MM-DD HH:mm:ss') },
+      { syntax: '{{seq}}',               description: 'Per-session counter, 1, 2, 3...',                                            preview: '(session-only)' },
+      { syntax: '{{uuid}}',              description: 'Fresh RFC 4122 v4 UUID',                                                      preview: '(unique per substitution)' },
+    ],
+    userVars: readUserVariables(),
+  };
 }
 
 function getNonce(): string {
@@ -148,6 +227,9 @@ export class TcpPanel {
           envelopes: getAll().map((e) => ({ id: e.id, label: e.label })),
         });
         break;
+      case 'getSyntaxHelp':
+        this._panel.webview.postMessage(buildSyntaxHelpPayload());
+        break;
     }
   }
 
@@ -262,9 +344,100 @@ export class TcpPanel {
   .e.recv .ic { color: #81c784; }
   .e.info .ic { color: var(--vscode-descriptionForeground); }
   .e.err  .ic, .e.err .tx { color: #f44747; }
+
+  /* Header row with title + help button */
+  .header-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,.3));
+    margin-bottom: 2px;
+  }
+  .header-title { font-weight: 600; font-size: 13px; }
+  .help-btn {
+    width: 24px; height: 24px; padding: 0; border-radius: 50%;
+    font-size: 12px; line-height: 1; opacity: .7;
+  }
+  .help-btn:hover { opacity: 1; }
+
+  /* Syntax help modal */
+  .modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.4);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 100;
+    animation: fade-in 150ms ease-out;
+  }
+  .modal-backdrop[hidden] { display: none; }
+  .modal {
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-widget-border, rgba(128,128,128,.3));
+    border-radius: 4px;
+    padding: 16px 20px;
+    max-width: 720px; max-height: 70vh;
+    width: 100%;
+    overflow: hidden;
+    position: relative;
+    display: flex; flex-direction: column; gap: 10px;
+    animation: slide-up 150ms ease-out;
+  }
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes slide-up { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+  .modal h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .modal-close {
+    position: absolute; top: 8px; right: 8px;
+    width: 24px; height: 24px; padding: 0; border-radius: 2px;
+    font-size: 16px; line-height: 1;
+  }
+  .modal-body {
+    display: flex; gap: 16px; overflow: hidden; flex: 1;
+  }
+  .help-section {
+    flex: 1; display: flex; flex-direction: column; gap: 8px;
+    overflow-y: auto; min-width: 0;
+  }
+  .help-section h3 {
+    margin: 0; font-size: 11px; color: var(--vscode-descriptionForeground);
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  .preview-toggle {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--vscode-descriptionForeground);
+    cursor: pointer;
+  }
+  .help-table {
+    width: 100%; border-collapse: collapse; font-size: 12px;
+  }
+  .help-table th {
+    text-align: left; padding: 4px 6px;
+    color: var(--vscode-descriptionForeground);
+    font-weight: normal; font-size: 11px;
+    border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,.3));
+  }
+  .help-table td {
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,.15));
+    vertical-align: top;
+  }
+  .help-table tr.help-row { cursor: pointer; }
+  .help-table tr.help-row:hover td { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.1)); }
+  .help-table code {
+    font-family: var(--vscode-editor-font-family, monospace);
+    background: var(--vscode-textCodeBlock-background, rgba(128,128,128,.15));
+    padding: 1px 4px; border-radius: 2px;
+  }
+  .preview-arrow {
+    color: var(--vscode-descriptionForeground);
+    margin-left: 6px;
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
 </style>
 </head>
 <body>
+
+<div class="header-row">
+  <span class="header-title">TCP Client</span>
+  <button class="sec help-btn" id="helpBtn" title="Syntax help (escape sequences and variables)">?</button>
+</div>
 
 <div class="row">
   <label for="server">Server</label>
@@ -309,6 +482,31 @@ export class TcpPanel {
   <div id="log"></div>
 </div>
 
+<div id="helpBackdrop" class="modal-backdrop" hidden>
+  <div class="modal" role="dialog" aria-labelledby="helpTitle">
+    <button class="sec modal-close" id="helpCloseBtn" aria-label="Close">&times;</button>
+    <h2 id="helpTitle">Syntax help</h2>
+    <div class="modal-body">
+      <section class="help-section">
+        <h3>Escape sequences</h3>
+        <p class="hint">Click any row to paste it into the message.</p>
+        <table id="escapeTable" class="help-table">
+          <!-- populated by JS from the getSyntaxHelp response -->
+        </table>
+      </section>
+      <section class="help-section">
+        <h3>Variables</h3>
+        <label class="preview-toggle">
+          <input type="checkbox" id="livePreviewToggle"> Show live substitution preview
+        </label>
+        <table id="varsTable" class="help-table">
+          <!-- populated by JS -->
+        </table>
+      </section>
+    </div>
+  </div>
+</div>
+
 <script nonce="${nonce}">
 (function () {
   var vscode    = acquireVsCodeApi();
@@ -321,7 +519,16 @@ export class TcpPanel {
   var sendEl    = document.getElementById('sendBtn');
   var clearEl   = document.getElementById('clearBtn');
   var logEl     = document.getElementById('log');
+  var helpBtn        = document.getElementById('helpBtn');
+  var helpBackdrop   = document.getElementById('helpBackdrop');
+  var helpCloseBtn   = document.getElementById('helpCloseBtn');
+  var livePreviewToggle = document.getElementById('livePreviewToggle');
+  var escapeTable    = document.getElementById('escapeTable');
+  var varsTable      = document.getElementById('varsTable');
   var connState = 'disconnected';
+
+  // Cache the cheat-sheet data so the live-preview toggle doesn't refetch
+  var helpData = { escapes: [], builtins: [], userVars: [] };
 
   // Restore persisted state from previous session
   var saved = vscode.getState() || {};
@@ -402,6 +609,129 @@ export class TcpPanel {
   });
   clearEl.addEventListener('click', function () { logEl.innerHTML = ''; });
 
+  // -----------------------------------------------------------------
+  // Syntax help modal
+  // -----------------------------------------------------------------
+  function openHelp() {
+    // Fetch fresh data each time so user vars reflect the latest settings
+    vscode.postMessage({ type: 'getSyntaxHelp' });
+    helpBackdrop.hidden = false;
+  }
+  function closeHelp() {
+    helpBackdrop.hidden = true;
+  }
+  helpBtn.addEventListener('click', openHelp);
+  helpCloseBtn.addEventListener('click', closeHelp);
+  helpBackdrop.addEventListener('click', function (e) {
+    if (e.target === helpBackdrop) { closeHelp(); }
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !helpBackdrop.hidden) { closeHelp(); }
+  });
+  livePreviewToggle.addEventListener('change', renderVarsTable);
+
+  function makeHelpRow(td1Content, td2Content, onClick) {
+    var tr = document.createElement('tr');
+    tr.className = 'help-row';
+    tr.title = 'Click to paste into the message';
+    var c1 = document.createElement('td');
+    c1.appendChild(td1Content);
+    var c2 = document.createElement('td');
+    if (typeof td2Content === 'string') { c2.textContent = td2Content; }
+    else { c2.appendChild(td2Content); }
+    tr.appendChild(c1); tr.appendChild(c2);
+    tr.addEventListener('click', onClick);
+    return tr;
+  }
+  function makeCode(text) {
+    var code = document.createElement('code');
+    code.textContent = text;
+    return code;
+  }
+
+  function renderEscapeTable() {
+    escapeTable.innerHTML = '';
+    var htr = document.createElement('tr');
+    var h1 = document.createElement('th'); h1.textContent = 'Sequence';
+    var h2 = document.createElement('th'); h2.textContent = 'Meaning';
+    htr.appendChild(h1); htr.appendChild(h2);
+    escapeTable.appendChild(htr);
+    for (var i = 0; i < helpData.escapes.length; i++) {
+      var e = helpData.escapes[i];
+      escapeTable.appendChild(makeHelpRow(makeCode(e.seq), e.meaning, (function (text) {
+        return function () { pasteIntoMessage(text); closeHelp(); };
+      })(e.seq)));
+    }
+  }
+
+  function renderVarsTable() {
+    varsTable.innerHTML = '';
+    var htr = document.createElement('tr');
+    var h1 = document.createElement('th'); h1.textContent = 'Syntax';
+    var h2 = document.createElement('th'); h2.textContent = 'Description';
+    htr.appendChild(h1); htr.appendChild(h2);
+    varsTable.appendChild(htr);
+
+    var i, tr;
+    for (i = 0; i < helpData.builtins.length; i++) {
+      var b = helpData.builtins[i];
+      var desc;
+      if (livePreviewToggle.checked && b.preview) {
+        desc = document.createElement('span');
+        desc.textContent = b.description;
+        var arrow = document.createElement('span');
+        arrow.className = 'preview-arrow';
+        arrow.textContent = '\u2192 ' + b.preview;
+        desc.appendChild(arrow);
+      } else {
+        desc = document.createTextNode(b.description);
+      }
+      varsTable.appendChild(makeHelpRow(makeCode(b.syntax), desc, (function (text) {
+        return function () { pasteIntoMessage(text); closeHelp(); };
+      })(b.syntax)));
+    }
+
+    if (helpData.userVars.length === 0) {
+      tr = document.createElement('tr');
+      var td = document.createElement('td');
+      td.colSpan = 2;
+      td.style.color = 'var(--vscode-descriptionForeground)';
+      td.style.fontStyle = 'italic';
+      td.textContent = '(no user variables defined)';
+      tr.appendChild(td);
+      varsTable.appendChild(tr);
+    } else {
+      for (var j = 0; j < helpData.userVars.length; j++) {
+        var uv = helpData.userVars[j];
+        var name = '{{' + uv.name + '}}';
+        var desc2;
+        if (livePreviewToggle.checked) {
+          desc2 = document.createElement('span');
+          desc2.textContent = 'User variable';
+          var arrow2 = document.createElement('span');
+          arrow2.className = 'preview-arrow';
+          arrow2.textContent = '\u2192 ' + uv.value;
+          desc2.appendChild(arrow2);
+        } else {
+          desc2 = document.createTextNode('User variable');
+        }
+        varsTable.appendChild(makeHelpRow(makeCode(name), desc2, (function (text) {
+          return function () { pasteIntoMessage(text); closeHelp(); };
+        })(name)));
+      }
+    }
+  }
+
+  function pasteIntoMessage(text) {
+    var start = msgEl.selectionStart || 0;
+    var end   = msgEl.selectionEnd || 0;
+    msgEl.value = msgEl.value.substring(0, start) + text + msgEl.value.substring(end);
+    var newPos = start + text.length;
+    msgEl.selectionStart = msgEl.selectionEnd = newPos;
+    msgEl.focus();
+    persist();
+  }
+
   window.addEventListener('message', function (ev) {
     var m = ev.data;
     if (m.type === 'stateChange') {
@@ -443,6 +773,12 @@ export class TcpPanel {
         envEl.value = 'none';
         persist();
       }
+    } else if (m.type === 'syntaxHelp') {
+      helpData.escapes  = m.escapes || [];
+      helpData.builtins = m.builtins || [];
+      helpData.userVars = m.userVars || [];
+      renderEscapeTable();
+      renderVarsTable();
     }
   });
 
