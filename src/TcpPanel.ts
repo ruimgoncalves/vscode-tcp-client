@@ -520,9 +520,17 @@ export class TcpPanel {
   .header-title { font-weight: 600; font-size: 13px; }
   .help-btn {
     width: 24px; height: 24px; padding: 0; border-radius: 50%;
-    font-size: 12px; line-height: 1; opacity: .7;
+    font-size: 13px; font-weight: 700; line-height: 1;
+    background: #f5c518; color: #1a1a1a;
+    border: 1px solid #c9a012;
+    opacity: .85;
   }
-  .help-btn:hover { opacity: 1; }
+  .help-btn:hover {
+    opacity: 1;
+    background: #ffd633;
+    border-color: #b89010;
+  }
+  .help-btn:focus { outline: 2px solid #ffd633; outline-offset: 1px; }
 
   /* Syntax help modal */
   .modal-backdrop {
