@@ -16,6 +16,9 @@ import {
 // to repopulate before exercising functions that depend on built-ins.
 import '../../variables/builtins';
 import { encodeMessage } from '../../MessageEncoder';
+import { TcpPanel } from '../../TcpPanel';
+import { TcpClient } from '../../TcpClient';
+import { EventEmitter } from 'events';
 
 /**
  * Helper: a fixed `Date` for deterministic timestamp assertions.
@@ -277,4 +280,91 @@ suite('Variables – live configuration', () => {
       vscode.ConfigurationTarget.Global
     )
   })
+})
+
+// ---------------------------------------------------------------------------
+// TcpPanel.send pipeline — substitution must happen BEFORE encode+wrap so the
+// bytes written to the socket contain the substituted value, not the
+// {{name}} reference. We open the real panel, swap its TcpClient for a
+// capturing stub, drive _handleWebviewMessage directly, and inspect the
+// buffer the panel would have written to the socket.
+// ---------------------------------------------------------------------------
+
+/**
+ * Stub TcpClient that pretends to be connected and captures every Buffer
+ * passed to `send()`. Mirrors the EventEmitter surface TcpPanel listens on.
+ */
+class StubTcpClient extends EventEmitter {
+  public sent: Buffer[] = [];
+  public state: 'disconnected' | 'connecting' | 'connected' = 'connected';
+  // The TcpClient.send signature is `send(data: Buffer): void`.
+  send(data: Buffer): void { this.sent.push(data); }
+  connect(): Promise<void> { return Promise.resolve(); }
+  disconnect(): void { /* no-op */ }
+  dispose(): void { this.removeAllListeners(); }
+}
+
+suite('TcpPanel.send – variable substitution before encode+wrap', function () {
+  // Allow time for the panel to initialise on load.
+  this.timeout(5000);
+
+  let panel: TcpPanel;
+  let stub: StubTcpClient;
+  let originalTcpClient: TcpClient;
+
+  setup(async () => {
+    // Open the panel; createOrShow is idempotent for an already-open panel.
+    await vscode.commands.executeCommand('tcpClient.openPanel');
+    // Give the panel a moment to instantiate and set currentPanel.
+    await new Promise((r) => setTimeout(r, 200));
+    panel = TcpPanel.currentPanel as TcpPanel;
+    assert.ok(panel, 'TcpPanel.currentPanel should be set after openPanel command');
+
+    // Swap the real TcpClient for a stub that captures what would be
+    // written to the socket. The panel's `_tcpClient` is private; reach
+    // in via bracket notation to install the stub for the duration of
+    // the test, and restore the original in teardown.
+    stub = new StubTcpClient();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    originalTcpClient = (panel as any)._tcpClient as TcpClient;
+    (panel as any)._tcpClient = stub;
+  });
+
+  teardown(async () => {
+    if (panel && originalTcpClient) {
+      (panel as any)._tcpClient = originalTcpClient;
+    }
+    // Reset the setting so the test is hermetic.
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'variables.custom',
+      [],
+      vscode.ConfigurationTarget.Global
+    );
+  });
+
+  test('panel.send substitutes {{name}} BEFORE the bytes hit the socket', async () => {
+    // Set a custom variable in the same settings the live read path uses.
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'variables.custom',
+      [{ name: 'user.name', value: 'ryu' }],
+      vscode.ConfigurationTarget.Global
+    );
+
+    // Drive the panel's send path with a {{user.name}} reference.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (panel as any)._handleWebviewMessage({
+      type: 'send',
+      message: 'Hello {{user.name}}!',
+      encoding: 'utf8',
+      envelope: 'none',
+    });
+
+    assert.strictEqual(stub.sent.length, 1, 'panel should have sent exactly one buffer');
+    const sent = stub.sent[0];
+    assert.strictEqual(
+      sent.toString('utf8'),
+      'Hello ryu!',
+      'bytes on the socket must contain the substituted value, not the {{name}} reference'
+    );
+  });
 });

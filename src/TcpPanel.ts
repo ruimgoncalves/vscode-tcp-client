@@ -2,13 +2,33 @@ import * as vscode from 'vscode';
 import { TcpClient, ConnectionState } from './TcpClient';
 import { encodeMessage, formatBytes, TextEncoding } from './MessageEncoder';
 import { getAll, resolve, wrap, Envelope } from './envelopes/Envelope';
+import {
+  getAll as getAllVariables,
+  formatTimestamp,
+  substitute,
+  DEFAULT_TIMESTAMP_FORMAT,
+  Variable,
+  VariableDef,
+} from './variables/Variables';
 
 interface WebviewMessage {
-  type: 'connect' | 'disconnect' | 'send' | 'getState' | 'getEnvelopes';
+  type:
+    | 'connect'
+    | 'disconnect'
+    | 'send'
+    | 'getState'
+    | 'getEnvelopes'
+    | 'getVariables'
+    | 'setTimestampFormat'
+    | 'addVariable'
+    | 'deleteVariable';
   server?: string;
   message?: string;
   encoding?: string;
   envelope?: string;
+  format?: string;
+  name?: string;
+  value?: string;
 }
 
 function getNonce(): string {
@@ -110,7 +130,11 @@ export class TcpPanel {
         break;
       case 'send': {
         try {
-          let buf = encodeMessage(msg.message ?? '', msg.encoding as TextEncoding ?? 'utf8');
+          // Resolve {{name}} references BEFORE encoding so the bytes
+          // written to the socket contain the substituted values. The
+          // response log therefore shows what was actually sent.
+          const substituted = substitute(msg.message ?? '', getAllVariables());
+          let buf = encodeMessage(substituted, msg.encoding as TextEncoding ?? 'utf8');
           // Resolve the requested envelope and wrap the payload. An unknown
           // id is treated as an error: post it to the webview and skip the
           // send so the user can correct the dropdown before retrying.
@@ -148,7 +172,95 @@ export class TcpPanel {
           envelopes: getAll().map((e) => ({ id: e.id, label: e.label })),
         });
         break;
+      case 'getVariables':
+        this._sendVariablesState();
+        break;
+      case 'setTimestampFormat': {
+        // Persist the new format. The substitute() call reads the live
+        // setting on every send, so the next message already uses it.
+        const format = msg.format ?? '';
+        await vscode.workspace.getConfiguration('tcpClient').update(
+          'variables.timestampFormat',
+          format,
+          vscode.ConfigurationTarget.Global
+        );
+        this._sendVariablesState();
+        break;
+      }
+      case 'addVariable': {
+        const name = (msg.name ?? '').trim();
+        const value = msg.value ?? '';
+        if (!name) {
+          this._panel.webview.postMessage({ type: 'error', message: 'Variable name cannot be empty.' });
+          break;
+        }
+        // Reject duplicates against both existing custom variables and
+        // built-ins (e.g. `timestamp`). `getAllVariables()` returns
+        // built-ins first, then custom — one lookup covers both.
+        const all = getAllVariables();
+        if (all.some((v) => v.name === name)) {
+          this._panel.webview.postMessage({
+            type: 'error',
+            message: `Variable "${name}" already exists.`,
+          });
+          break;
+        }
+        const current = vscode.workspace
+          .getConfiguration('tcpClient')
+          .get<VariableDef[]>('variables.custom', []);
+        const next = Array.isArray(current) ? current.slice() : [];
+        next.push({ name, value });
+        await vscode.workspace.getConfiguration('tcpClient').update(
+          'variables.custom',
+          next,
+          vscode.ConfigurationTarget.Global
+        );
+        this._sendVariablesState();
+        break;
+      }
+      case 'deleteVariable': {
+        const name = msg.name ?? '';
+        if (!name) { break; }
+        // Built-in variables are not removable from the UI; the webview
+        // doesn't render a delete button for them, but defend here too.
+        const current = vscode.workspace
+          .getConfiguration('tcpClient')
+          .get<VariableDef[]>('variables.custom', []);
+        if (!Array.isArray(current)) { break; }
+        const next = current.filter((v) => v && v.name !== name);
+        if (next.length === current.length) { break; }  // not found
+        await vscode.workspace.getConfiguration('tcpClient').update(
+          'variables.custom',
+          next,
+          vscode.ConfigurationTarget.Global
+        );
+        this._sendVariablesState();
+        break;
+      }
     }
+  }
+
+  /**
+   * Push the current variables state (custom list + current format +
+   * the live formatted timestamp value) to the webview. Called on
+   * panel load and after every successful mutation so the UI stays in
+   * sync with settings.json without needing its own timestamp formatter.
+   */
+  private _sendVariablesState(): void {
+    const all = getAllVariables();
+    const custom = all.filter((v: Variable) => !v.builtin).map((v: Variable) => ({
+      name: v.name,
+      value: v.value,
+    }));
+    const format = vscode.workspace
+      .getConfiguration('tcpClient')
+      .get<string>('variables.timestampFormat', DEFAULT_TIMESTAMP_FORMAT);
+    this._panel.webview.postMessage({
+      type: 'variables',
+      custom,
+      timestampFormat: format,
+      timestampValue: formatTimestamp(new Date(), format),
+    });
   }
 
   dispose(): void {
@@ -262,6 +374,55 @@ export class TcpPanel {
   .e.recv .ic { color: #81c784; }
   .e.info .ic { color: var(--vscode-descriptionForeground); }
   .e.err  .ic, .e.err .tx { color: #f44747; }
+
+  /* Variables section */
+  .vars-wrap {
+    display: flex; flex-direction: column; gap: 6px;
+    max-height: 220px; flex-shrink: 0;
+  }
+  .vars-body { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
+  .var-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 2px 4px; border-radius: 2px;
+  }
+  .var-row.builtin { background: var(--vscode-textBlockQuote-background, rgba(128,128,128,.07)); }
+  .var-row .var-name {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: var(--vscode-editor-font-size, 13px);
+    font-weight: 600; flex-shrink: 0; min-width: 80px;
+  }
+  .var-row .var-value {
+    flex: 1; min-width: 0;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: var(--vscode-editor-font-size, 13px);
+    color: var(--vscode-foreground);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .var-row .var-del {
+    flex-shrink: 0; padding: 2px 8px; font-size: 11px;
+  }
+  .var-empty {
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px; font-style: italic; padding: 4px;
+  }
+  .var-add {
+    display: flex; align-items: center; gap: 6px; margin-top: 2px;
+  }
+  .var-add input { flex: 1; min-width: 0; }
+  .var-add input.name { flex: 0 0 100px; }
+  .var-add button { flex-shrink: 0; }
+  .var-format {
+    display: flex; align-items: center; gap: 6px;
+  }
+  .var-format label { min-width: 0; }
+  .var-format input { flex: 1; }
+  .var-ts-val {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: var(--vscode-editor-font-size, 13px);
+    color: var(--vscode-foreground);
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
 </style>
 </head>
 <body>
@@ -296,8 +457,28 @@ export class TcpPanel {
   </div>
   <textarea id="msg" placeholder="Type message...&#10;Escape sequences: \\xHH (raw byte), \\n \\r \\t (control), \\\\ (backslash)"></textarea>
   <div class="row">
-    <span class="hint">Ctrl+Enter to send</span>
+    <span class="hint">Ctrl+Enter to send. <code>{{name}}</code> is substituted before encoding.</span>
     <button id="sendBtn" disabled>Send</button>
+  </div>
+</div>
+
+<div class="vars-wrap">
+  <div class="row">
+    <span class="sec-label">Variables</span>
+  </div>
+  <div class="var-format">
+    <label for="tsFormat">Format</label>
+    <input id="tsFormat" type="text" spellcheck="false" autocomplete="off" placeholder="YYYY-MM-DDTHH:mm:ss.sssZ">
+  </div>
+  <div class="row">
+    <label>timestamp</label>
+    <span id="tsValue" class="var-ts-val">&mdash;</span>
+  </div>
+  <div id="varsBody" class="vars-body"></div>
+  <div class="var-add">
+    <input id="newVarName" class="name" type="text" spellcheck="false" autocomplete="off" placeholder="name">
+    <input id="newVarValue" type="text" spellcheck="false" autocomplete="off" placeholder="value">
+    <button class="sec" id="addVarBtn">Add</button>
   </div>
 </div>
 
@@ -321,7 +502,17 @@ export class TcpPanel {
   var sendEl    = document.getElementById('sendBtn');
   var clearEl   = document.getElementById('clearBtn');
   var logEl     = document.getElementById('log');
+  var tsFormatEl = document.getElementById('tsFormat');
+  var tsValueEl  = document.getElementById('tsValue');
+  var varsBodyEl = document.getElementById('varsBody');
+  var newVarNameEl  = document.getElementById('newVarName');
+  var newVarValueEl = document.getElementById('newVarValue');
+  var addVarBtnEl   = document.getElementById('addVarBtn');
   var connState = 'disconnected';
+  // Holds the most recent variables snapshot from the extension. The
+  // format input only writes its value back to the DOM when it differs
+  // from what the user has typed, to avoid clobbering an in-flight edit.
+  var varsState = { custom: [], timestampFormat: '', timestampValue: '' };
 
   // Restore persisted state from previous session
   var saved = vscode.getState() || {};
@@ -402,6 +593,82 @@ export class TcpPanel {
   });
   clearEl.addEventListener('click', function () { logEl.innerHTML = ''; });
 
+  // -------------------------------------------------------------------------
+  // Variables section
+  // -------------------------------------------------------------------------
+  function renderVars() {
+    // Custom list (the built-in timestamp is shown above as a separate row).
+    varsBodyEl.innerHTML = '';
+    if (varsState.custom.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'var-empty';
+      empty.textContent = '(no user variables — add one below)';
+      varsBodyEl.appendChild(empty);
+    } else {
+      for (var i = 0; i < varsState.custom.length; i++) {
+        var v = varsState.custom[i];
+        var row = document.createElement('div');
+        row.className = 'var-row';
+        var nm = document.createElement('span');
+        nm.className = 'var-name'; nm.textContent = v.name;
+        var vv = document.createElement('span');
+        vv.className = 'var-value'; vv.textContent = v.value;
+        vv.title = v.value;  // full value on hover for long values
+        var del = document.createElement('button');
+        del.className = 'sec var-del'; del.textContent = '\u00d7';
+        del.title = 'Delete ' + v.name;
+        del.addEventListener('click', (function (name) {
+          return function () {
+            vscode.postMessage({ type: 'deleteVariable', name: name });
+          };
+        })(v.name));
+        row.appendChild(nm); row.appendChild(vv); row.appendChild(del);
+        varsBodyEl.appendChild(row);
+      }
+    }
+    // Format input — only update the DOM value when it differs from
+    // what the user has typed, to avoid clobbering an in-flight edit.
+    if (document.activeElement !== tsFormatEl && tsFormatEl.value !== varsState.timestampFormat) {
+      tsFormatEl.value = varsState.timestampFormat;
+    }
+    tsValueEl.textContent = varsState.timestampValue || '\u2014';
+  }
+
+  // Debounced format update: 200 ms after the last keystroke, post the
+  // current value of the input. Clears any pending timer on each new
+  // keystroke so we only post on settle.
+  var formatDebounceTimer = null;
+  tsFormatEl.addEventListener('input', function () {
+    if (formatDebounceTimer !== null) { clearTimeout(formatDebounceTimer); }
+    formatDebounceTimer = setTimeout(function () {
+      formatDebounceTimer = null;
+      vscode.postMessage({ type: 'setTimestampFormat', format: tsFormatEl.value });
+    }, 200);
+  });
+
+  addVarBtnEl.addEventListener('click', function () {
+    var name = newVarNameEl.value.trim();
+    var value = newVarValueEl.value;
+    if (!name) { return; }  // empty inputs are rejected silently
+    vscode.postMessage({ type: 'addVariable', name: name, value: value });
+    newVarNameEl.value = '';
+    newVarValueEl.value = '';
+  });
+  // Pressing Enter in the value field also submits the form.
+  newVarValueEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); addVarBtnEl.click(); }
+  });
+  newVarNameEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); addVarBtnEl.click(); }
+  });
+
+  // Refresh the live timestamp value once a second by asking the
+  // extension. The format string lives in one place (the extension) so
+  // the webview doesn't need its own date formatter.
+  setInterval(function () {
+    vscode.postMessage({ type: 'getVariables' });
+  }, 1000);
+
   window.addEventListener('message', function (ev) {
     var m = ev.data;
     if (m.type === 'stateChange') {
@@ -443,6 +710,13 @@ export class TcpPanel {
         envEl.value = 'none';
         persist();
       }
+    } else if (m.type === 'variables') {
+      varsState = {
+        custom: m.custom || [],
+        timestampFormat: m.timestampFormat || '',
+        timestampValue: m.timestampValue || '',
+      };
+      renderVars();
     }
   });
 
@@ -453,6 +727,9 @@ export class TcpPanel {
   // server-rendered HTML already shows the list, but this picks up
   // changes made between sessions.
   vscode.postMessage({ type: 'getEnvelopes' });
+  // And fetch the current variables state (custom list, format, live
+  // timestamp value) so the Variables section is populated immediately.
+  vscode.postMessage({ type: 'getVariables' });
 })();
 </script>
 </body>
