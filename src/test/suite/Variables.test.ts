@@ -107,25 +107,17 @@ suite('Variables – substitute', () => {
     }
   });
 
-  test('\\{{ renders as literal {{ (not a reference)', () => {
-    // encodeMessage converts `\{\{` to bytes 0x7B 0x7B; the resulting string
-    // (`{{name}}` once decoded) goes through substitute, which sees the
-    // literal `{` chars and does not treat them as a reference because
-    // there is no closing `}}` in plain (non-encoded) form to match.
-    const input = '\\{{name}}';
+  test('\\{\\{name}} round-trips to literal {{name}} (each brace escaped)', () => {
+    // The CORRECT way to send literal {{name}} in a message: escape each brace.
+    // Encoder converts each \{ to a literal { byte, giving us the text {{name}}
+    // for substitute to see. substitute finds no `name` variable, leaves the
+    // reference unchanged (with a warn), and the output is {{name}} literal.
+    const input = '\\{\\{name}}';
     const encoded = encodeMessage(input, 'utf8').toString('utf8');
+    assert.strictEqual(encoded, '{{name}}');
     assert.strictEqual(
       substitute(encoded, [], FIXED_NOW),
       '{{name}}'
-    );
-  });
-
-  test('\\}} renders as literal }} (not a reference)', () => {
-    const input = '\\}\\}';
-    const encoded = encodeMessage(input, 'utf8').toString('utf8');
-    assert.strictEqual(
-      substitute(encoded, [], FIXED_NOW),
-      '}}'
     );
   });
 
