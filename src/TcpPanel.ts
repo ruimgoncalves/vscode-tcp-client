@@ -1,17 +1,28 @@
 import * as vscode from 'vscode';
 import { TcpClient, ConnectionState } from './TcpClient';
 import { encodeMessage, formatBytes, TextEncoding } from './MessageEncoder';
+import { getAll, resolve, wrap, Envelope } from './envelopes/Envelope';
 
 interface WebviewMessage {
-  type: 'connect' | 'disconnect' | 'send' | 'getState';
+  type: 'connect' | 'disconnect' | 'send' | 'getState' | 'getEnvelopes';
   server?: string;
   message?: string;
   encoding?: string;
+  envelope?: string;
 }
 
 function getNonce(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   return Array.from({ length: 32 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
+
+/** HTML-escape attribute values embedded into the webview template. */
+function escapeHtmlAttr(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 export class TcpPanel {
@@ -99,7 +110,19 @@ export class TcpPanel {
         break;
       case 'send': {
         try {
-          const buf = encodeMessage(msg.message ?? '', msg.encoding as TextEncoding ?? 'utf8');
+          let buf = encodeMessage(msg.message ?? '', msg.encoding as TextEncoding ?? 'utf8');
+          // Resolve the requested envelope and wrap the payload. An unknown
+          // id is treated as an error: post it to the webview and skip the
+          // send so the user can correct the dropdown before retrying.
+          const envId = msg.envelope ?? 'none';
+          let envelope: Envelope;
+          try {
+            envelope = resolve(envId);
+          } catch (err: unknown) {
+            this._panel.webview.postMessage({ type: 'error', message: (err as Error).message });
+            break;
+          }
+          buf = wrap(buf, envelope.spec);
           this._tcpClient.send(buf);
           this._lastSendTime = Date.now();
           this._panel.webview.postMessage({
@@ -119,6 +142,12 @@ export class TcpPanel {
           server: this._server,
         });
         break;
+      case 'getEnvelopes':
+        this._panel.webview.postMessage({
+          type: 'envelopes',
+          envelopes: getAll().map((e) => ({ id: e.id, label: e.label })),
+        });
+        break;
     }
   }
 
@@ -135,6 +164,13 @@ export class TcpPanel {
 
   private _getHtmlForWebview(webview: vscode.Webview): string {
     const nonce = getNonce();
+    // Render the envelope options server-side so the dropdown is populated
+    // immediately, even before any async message round-trip. Custom envelopes
+    // from settings.json are also included because getAll() reads from the
+    // configuration scope synchronously.
+    const envelopeOptions = getAll()
+      .map((e) => `<option value="${escapeHtmlAttr(e.id)}">${escapeHtmlAttr(e.label)}</option>`)
+      .join('');
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -247,6 +283,13 @@ export class TcpPanel {
   </select>
 </div>
 
+<div class="row">
+  <label for="envelope">Envelope</label>
+  <select id="envelope">
+    ${envelopeOptions}
+  </select>
+</div>
+
 <div class="msg-wrap">
   <div class="row">
     <span class="sec-label">Message</span>
@@ -273,6 +316,7 @@ export class TcpPanel {
   var connectEl = document.getElementById('connectBtn');
   var dotEl     = document.getElementById('dot');
   var encEl     = document.getElementById('encoding');
+  var envEl     = document.getElementById('envelope');
   var msgEl     = document.getElementById('msg');
   var sendEl    = document.getElementById('sendBtn');
   var clearEl   = document.getElementById('clearBtn');
@@ -283,13 +327,15 @@ export class TcpPanel {
   var saved = vscode.getState() || {};
   if (saved.server)   { serverEl.value = saved.server; }
   if (saved.encoding) { encEl.value    = saved.encoding; }
+  if (saved.envelope) { envEl.value    = saved.envelope; }
   if (saved.message)  { msgEl.value    = saved.message; }
 
   function persist() {
-    vscode.setState({ server: serverEl.value, encoding: encEl.value, message: msgEl.value });
+    vscode.setState({ server: serverEl.value, encoding: encEl.value, envelope: envEl.value, message: msgEl.value });
   }
   serverEl.addEventListener('input', persist);
   encEl.addEventListener('change', persist);
+  envEl.addEventListener('change', persist);
   msgEl.addEventListener('input', persist);
 
   function setUiState(s) {
@@ -347,7 +393,7 @@ export class TcpPanel {
     if (connState !== 'connected') { return; }
     var text = msgEl.value;
     if (!text) { return; }
-    vscode.postMessage({ type: 'send', message: text, encoding: encEl.value });
+    vscode.postMessage({ type: 'send', message: text, encoding: encEl.value, envelope: envEl.value || 'none' });
   }
 
   sendEl.addEventListener('click', doSend);
@@ -376,11 +422,37 @@ export class TcpPanel {
     } else if (m.type === 'error') {
       setUiState('disconnected');
       appendLog('err', '\u26a0', m.message);
+    } else if (m.type === 'envelopes') {
+      // Refresh the dropdown so that custom envelopes added in
+      // settings.json between sessions become available. Preserve the
+      // currently selected id if it's still in the new list; otherwise
+      // fall back to 'none'.
+      var prev = envEl.value;
+      envEl.innerHTML = '';
+      var found = false;
+      for (var i = 0; i < m.envelopes.length; i++) {
+        var opt = document.createElement('option');
+        opt.value = m.envelopes[i].id;
+        opt.textContent = m.envelopes[i].label;
+        envEl.appendChild(opt);
+        if (m.envelopes[i].id === prev) { found = true; }
+      }
+      if (found) {
+        envEl.value = prev;
+      } else {
+        envEl.value = 'none';
+        persist();
+      }
     }
   });
 
   // Sync state on load (handles panel restore after VS Code restart)
   vscode.postMessage({ type: 'getState' });
+  // Also fetch the envelope list, in case the user added new custom
+  // envelopes in settings.json since the panel was last opened. The
+  // server-rendered HTML already shows the list, but this picks up
+  // changes made between sessions.
+  vscode.postMessage({ type: 'getEnvelopes' });
 })();
 </script>
 </body>
