@@ -17,6 +17,10 @@ export const ENCODINGS: { label: string; value: TextEncoding }[] = [
  *   \t    — horizontal tab  (0x09)
  *   \\    — literal backslash
  *   \0    — null byte (0x00)
+ *   \{    — literal `{` (0x7B), so message text can contain `{{name}}`
+ *            without being treated as a variable reference by the
+ *            substitution layer
+ *   \}    — literal `}` (0x7D), matching escape
  *
  * All other text is encoded using the specified TextEncoding.
  * Unknown escapes (e.g. \z) preserve the backslash and advance past it.
@@ -68,6 +72,14 @@ export function encodeMessage(input: string, encoding: TextEncoding): Buffer {
     }
     if (next === '\\') {
       parts.push(Buffer.from('\\', encoding));
+      i += 2; textStart = i; continue;
+    }
+    if (next === '{') {
+      parts.push(Buffer.from('{', encoding));
+      i += 2; textStart = i; continue;
+    }
+    if (next === '}') {
+      parts.push(Buffer.from('}', encoding));
       i += 2; textStart = i; continue;
     }
 
