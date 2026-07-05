@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { randomUUID } from 'crypto';
 
 /**
  * A Variable is a named value that may be interpolated into outgoing
@@ -112,11 +113,15 @@ export function lookup(name: string, all: Variable[]): Variable | undefined {
 
 /**
  * Formats a `Date` according to a small subset of date-fns-style tokens.
- * Supports: `YYYY MM DD HH mm ss sss Z`.
+ * Supports: `YYYY MM DD HH mm ss sss Z X x`.
  *
  * `Z` is emitted as the literal character `Z` (the UTC marker), since
  * the v1 built-in always renders UTC. Custom timezone offsets are not
  * supported — v1 is UTC-only, configurable only by format choice.
+ *
+ * Epoch tokens:
+ *  - `X` — Unix epoch seconds (integer), e.g. `1751723123`
+ *  - `x` — Unix epoch milliseconds (integer), e.g. `1751723123000`
  *
  * If the format string contains a token character we don't understand
  * we fall back to `DEFAULT_TIMESTAMP_FORMAT` and `console.warn` so the
@@ -126,7 +131,7 @@ export function formatTimestamp(date: Date, format: string): string {
   // Allow letters/symbols that appear in legitimate format strings
   // (e.g. date-fns tokens YYYY, MM, DD; common separators : / - . T Z and digits).
   // Anything outside this set triggers the fallback + console.warn.
-  const unsupported = /[^YMDHmssZ:\-T.Z+\/0-9 ]/;
+  const unsupported = /[^YMDHmssXZx:\-T.Z+\/0-9 ]/;
   if (unsupported.test(format)) {
     console.warn(`Unsupported timestamp format token: "${format}". Falling back to default.`);
     format = DEFAULT_TIMESTAMP_FORMAT;
@@ -152,6 +157,8 @@ export function formatTimestamp(date: Date, format: string): string {
     .replace(/mm/g, mm)
     .replace(/sss/g, sss)
     .replace(/ss/g, ss)
+    .replace(/X/g, Math.floor(date.getTime() / 1000).toString())
+    .replace(/x/g, date.getTime().toString())
     .replace(/Z/g, 'Z');
 }
 
@@ -159,8 +166,12 @@ export function formatTimestamp(date: Date, format: string): string {
 // Interpolation
 // ---------------------------------------------------------------------------
 
-/** Matches `{{name}}` where name matches the documented identifier shape. */
-const REFERENCE_RE = /\{\{([a-zA-Z_][a-zA-Z0-9_.-]*)\}\}/g;
+/**
+ * Matches `{{name}}` and `{{name|pipe}}` where name matches the
+ * documented identifier shape and pipe is an optional suffix captured
+ * separately (group 2 is `undefined` when no pipe is present).
+ */
+const REFERENCE_RE = /\{\{([a-zA-Z_][a-zA-Z0-9_.-]*)(?:\|([^}]*))?\}\}/g;
 
 /**
  * Substitutes `{{name}}` references in `text` with the corresponding
@@ -169,8 +180,21 @@ const REFERENCE_RE = /\{\{([a-zA-Z_][a-zA-Z0-9_.-]*)\}\}/g;
  * Rules:
  *  - `{{name}}` is replaced with `value` (custom) or the computed
  *    timestamp (built-in `name === 'timestamp'`).
- *  - Unknown variable names are left in the output verbatim and a
- *    `console.warn` is emitted once per reference.
+ *  - `{{timestamp|FMT}}` overrides the `tcpClient.variables.timestampFormat`
+ *    setting for this single reference — FMT is rendered with
+ *    `formatTimestamp(now, FMT)`. An empty pipe (`{{timestamp|}}`) falls
+ *    back to the live setting (same as no pipe).
+ *  - `{{seq}}` returns the panel's per-session counter (`state.seq`),
+ *    falling back to `1` (with a `console.warn`) when no state is passed.
+ *    Any pipe on `{{seq|...}}` is silently ignored.
+ *  - `{{uuid}}` returns a fresh RFC 4122 v4 UUID per call
+ *    (`crypto.randomUUID()`). Any pipe on `{{uuid|...}}` is silently
+ *    ignored.
+ *  - User variables (`{{user.name|foo}}`): the pipe is silently stripped
+ *    and the variable's literal `value` is substituted. The pipe is
+ *    treated as noise on user-defined names.
+ *  - Unknown variable names are left in the output VERBATIM (including
+ *    any pipe suffix) and a `console.warn` is emitted once per reference.
  *  - Substitution is a single pass — the output is NOT re-scanned, so
  *    substituted text containing `{{` is preserved literally.
  *  - `\{\{` and `\}\}` are escape sequences handled by `encodeMessage`;
@@ -184,23 +208,51 @@ const REFERENCE_RE = /\{\{([a-zA-Z_][a-zA-Z0-9_.-]*)\}\}/g;
  * @param now       Optional fixed `Date` for the built-in timestamp —
  *                  used by tests to make assertions deterministic. Defaults
  *                  to `new Date()` at call time.
+ * @param state     Optional per-session state. Currently only `{ seq?: number }`
+ *                  is consulted; `seq` defaults to `1` (with a warn) when
+ *                  absent.
  */
 export function substitute(
   text: string,
   variables: Variable[],
-  now: Date = new Date()
+  now: Date = new Date(),
+  state: { seq?: number } = {}
 ): string {
-  return text.replace(REFERENCE_RE, (match, name: string) => {
+  return text.replace(REFERENCE_RE, (match, name: string, pipe: string | undefined) => {
+    // Built-in timestamp: pipe overrides the live setting.
+    if (name === 'timestamp') {
+      const v = lookup(name, variables);
+      if (!v) {
+        console.warn(`Unknown variable: ${name}`);
+        return match;
+      }
+      if (typeof pipe === 'string' && pipe.length > 0) {
+        return formatTimestamp(now, pipe);
+      }
+      const liveFormat = vscode.workspace
+        .getConfiguration('tcpClient')
+        .get<string>('variables.timestampFormat', v.format ?? DEFAULT_TIMESTAMP_FORMAT);
+      return formatTimestamp(now, liveFormat);
+    }
+    // Built-in seq: panel-managed counter, warn + fall back to 1 if absent.
+    if (name === 'seq') {
+      if (typeof state.seq !== 'number') {
+        console.warn(
+          `Variable {{seq}} used without a panel state; falling back to 1. ` +
+          `Ensure the panel passes state.seq into substitute().`
+        );
+      }
+      return `${state.seq ?? 1}`;
+    }
+    // Built-in uuid: fresh v4 UUID per call. Pipe silently ignored.
+    if (name === 'uuid') {
+      return randomUUID();
+    }
+    // Anything else (user-defined or unknown).
     const v = lookup(name, variables);
     if (!v) {
       console.warn(`Unknown variable: ${name}`);
       return match;
-    }
-    if (v.builtin && name === 'timestamp') {
-      const liveFormat = vscode.workspace
-        .getConfiguration('tcpClient')
-        .get<string>('variables.timestampFormat', v.format ?? DEFAULT_TIMESTAMP_FORMAT)
-      return formatTimestamp(now, liveFormat)
     }
     return v.value;
   });

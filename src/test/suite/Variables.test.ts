@@ -86,26 +86,13 @@ suite('Variables – substitute', () => {
   });
 
   test('{{timestamp}} with a custom format uses that format', async () => {
-    // Override the live tcpClient.variables.timestampFormat setting —
-    // substitute() reads this setting fresh on every call (Task 1 commit 2e13504),
-    // so the user-configured format takes precedence over the seed built-in format.
-    await vscode.workspace.getConfiguration('tcpClient').update(
-      'variables.timestampFormat',
-      'YYYY/MM/DD',
-      vscode.ConfigurationTarget.Global
-    )
-    try {
-      const vars = listBuiltin()
-      const result = substitute('{{timestamp}}', vars, FIXED_NOW)
-      assert.strictEqual(result, '2026/07/05')
-    } finally {
-      // Reset to default so subsequent tests are unaffected.
-      await vscode.workspace.getConfiguration('tcpClient').update(
-        'variables.timestampFormat',
-        undefined,
-        vscode.ConfigurationTarget.Global
-      )
-    }
+    // v2: the pipe form `{{timestamp|FMT}}` overrides the live setting
+    // for this single reference. The live setting is left untouched here
+    // (the v1-style override-by-setting still works in the dedicated
+    // `tcpClient.variables.timestampFormat setting is applied` test).
+    const vars = listBuiltin()
+    const result = substitute('{{timestamp|YYYY/MM/DD}}', vars, FIXED_NOW)
+    assert.strictEqual(result, '2026/07/05')
   });
 
   test('unknown variable is left as {{name}} and a console.warn is emitted', () => {
@@ -365,6 +352,126 @@ suite('TcpPanel.send – variable substitution before encode+wrap', function () 
       sent.toString('utf8'),
       'Hello ryu!',
       'bytes on the socket must contain the substituted value, not the {{name}} reference'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Variables v2 — pipe syntax, seq, uuid, epoch tokens. All behaviour
+// described in `.hermes-plan-variables-pipe.md` (Task A).
+// ---------------------------------------------------------------------------
+
+suite('Variables – v2 pipe syntax', () => {
+
+  setup(() => { _clearAllForTests(); _loadBuiltinsForTests(); });
+  teardown(() => { _clearAllForTests(); });
+
+  test('{{timestamp|format}} with custom format overrides the setting', () => {
+    const vars = listBuiltin();
+    const result = substitute('{{timestamp|YYYY-MM-DD}}', vars, FIXED_NOW);
+    assert.strictEqual(result, '2026-07-05');
+  });
+
+  test('{{timestamp|format}} with format containing epoch token X', () => {
+    const vars = listBuiltin();
+    const result = substitute('{{timestamp|X}}', vars, FIXED_NOW);
+    assert.strictEqual(
+      result,
+      Math.floor(FIXED_NOW.getTime() / 1000).toString()
+    );
+  });
+
+  test('{{timestamp|format}} with format containing epoch ms token x', () => {
+    const vars = listBuiltin();
+    const result = substitute('{{timestamp|x}}', vars, FIXED_NOW);
+    assert.strictEqual(result, FIXED_NOW.getTime().toString());
+  });
+
+  test('{{seq}} returns the seq from state', () => {
+    const vars = listBuiltin();
+    const result = substitute('seq={{seq}}', vars, FIXED_NOW, { seq: 7 });
+    assert.strictEqual(result, 'seq=7');
+  });
+
+  test('{{seq}} without state falls back to 1 with a warn', () => {
+    const { messages, restore } = captureWarn();
+    try {
+      const vars = listBuiltin();
+      const result = substitute('seq={{seq}}', vars, FIXED_NOW, {});
+      assert.strictEqual(result, 'seq=1');
+      assert.ok(
+        messages.some((w) => /seq/i.test(w)),
+        `expected a "seq" warning, got: ${JSON.stringify(messages)}`
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  test("{{seq|anything}} ignores the pipe and still returns seq", () => {
+    const vars = listBuiltin();
+    const result = substitute('{{seq|foo}}', vars, FIXED_NOW, { seq: 42 });
+    assert.strictEqual(result, '42');
+  });
+
+  test('{{uuid}} produces a valid UUID v4', () => {
+    const vars = listBuiltin();
+    const result = substitute('{{uuid}}', vars, FIXED_NOW);
+    assert.ok(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(result),
+      `expected a UUID v4, got: ${JSON.stringify(result)}`
+    );
+  });
+
+  test("{{uuid|anything}} ignores the pipe and still returns a UUID", () => {
+    const vars = listBuiltin();
+    const result = substitute('{{uuid|foo}}', vars, FIXED_NOW);
+    assert.ok(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(result),
+      `expected a UUID v4, got: ${JSON.stringify(result)}`
+    );
+  });
+
+  test("{{user.name|foo}} silently strips the pipe and substitutes the value", () => {
+    const custom: Variable[] = [
+      { name: 'user.name', value: 'ryu', builtin: false },
+    ];
+    const result = substitute('{{user.name|foo}}', custom, FIXED_NOW);
+    assert.strictEqual(result, 'ryu');
+  });
+
+  test("{{unknown|foo}} unknown with pipe leaves the whole reference verbatim with a warn", () => {
+    const { messages, restore } = captureWarn();
+    try {
+      const result = substitute('{{unknown|foo}}', [], FIXED_NOW);
+      assert.strictEqual(result, '{{unknown|foo}}');
+      assert.ok(
+        messages.some((w) => /Unknown variable: unknown/.test(w)),
+        `expected an "Unknown variable: unknown" warning, got: ${JSON.stringify(messages)}`
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  test('formatTimestamp with X token returns epoch seconds', () => {
+    assert.strictEqual(
+      formatTimestamp(FIXED_NOW, 'X'),
+      Math.floor(FIXED_NOW.getTime() / 1000).toString()
+    );
+  });
+
+  test('formatTimestamp with x token returns epoch milliseconds', () => {
+    assert.strictEqual(
+      formatTimestamp(FIXED_NOW, 'x'),
+      FIXED_NOW.getTime().toString()
+    );
+  });
+
+  test('formatTimestamp with mixed tokens including X works', () => {
+    assert.strictEqual(
+      formatTimestamp(FIXED_NOW, 'YYYY-MM-DD X'),
+      '2026-07-05 ' + Math.floor(FIXED_NOW.getTime() / 1000).toString()
     );
   });
 });
