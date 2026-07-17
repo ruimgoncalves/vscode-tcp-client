@@ -16,6 +16,7 @@ interface WebviewMessage {
   type:
     | 'connect'
     | 'disconnect'
+    | 'cancelConnect'
     | 'send'
     | 'getState'
     | 'getVariables'
@@ -219,6 +220,14 @@ export class TcpPanel {
       }
       case 'disconnect':
         this._tcpClient.disconnect();
+        break;
+      case 'cancelConnect':
+        // User clicked the Connect button while it was showing the
+        // "Cancel" label (see setUiState's connecting branch). Tear down
+        // the in-flight socket and reject the pending connect promise.
+        // Safe to call when the client isn't connecting — `cancel()` is
+        // a no-op in that case.
+        this._tcpClient.cancel();
         break;
       case 'send': {
         try {
@@ -964,8 +973,12 @@ export class TcpPanel {
       connectEl.disabled = false;
       sendEl.disabled = true;
     } else if (s === 'connecting') {
-      connectEl.textContent = 'Connecting\u2026';
-      connectEl.disabled = true;
+      // Keep the button enabled so the user can click it to cancel.
+      // Switching the label from "Connecting…" to "Cancel" signals
+      // the affordance; the click handler routes the click to
+      // { type: 'cancelConnect' } instead of starting a new connect.
+      connectEl.textContent = 'Cancel';
+      connectEl.disabled = false;
       sendEl.disabled = true;
     } else {
       connectEl.textContent = 'Disconnect';
@@ -985,7 +998,21 @@ export class TcpPanel {
     var e  = document.createElement('div'); e.className = 'e ' + cls;
     var t  = document.createElement('span'); t.className = 'ts'; t.textContent = ts();
     var ic = document.createElement('span'); ic.className = 'ic'; ic.textContent = icon;
-    var tx = document.createElement('span'); tx.className = 'tx'; tx.textContent = text;
+    var tx = document.createElement('span'); tx.className = 'tx';
+    // Render embedded '\n' as actual line breaks so multi-line protocol
+    // responses (HL7 segments, NRPE output, etc.) read naturally instead
+    // of as a single munged line. XSS-safe: each run uses textContent /
+    // createTextNode (no innerHTML) and only literal '\n' triggers a <br>.
+    // NOTE: formatBytes() returns the two-character sequence '\\' + 'n'
+    // for byte 0x0A (and '\\r' for 0x0D, '\\t' for 0x09), so we split on
+    // the literal two characters '\\' + 'n', not on an actual newline.
+    // Splitting on the rendered escape — not the underlying byte — is
+    // what makes line breaks visible in the log.
+    var parts = text.split('\\n');
+    for (var pi = 0; pi < parts.length; pi++) {
+      if (pi > 0) { tx.appendChild(document.createElement('br')); }
+      tx.appendChild(document.createTextNode(parts[pi]));
+    }
     e.appendChild(t); e.appendChild(ic); e.appendChild(tx);
     if (meta) {
       var m = document.createElement('span'); m.className = 'mt'; m.textContent = ' ' + meta;
@@ -1001,6 +1028,12 @@ export class TcpPanel {
       if (!s) { return; }
       setUiState('connecting');
       vscode.postMessage({ type: 'connect', server: s });
+    } else if (connState === 'connecting') {
+      // The button is enabled while connecting (label = "Cancel") so the
+      // user can abort a hung connect (firewall drop, half-open). The
+      // extension host's connect attempt will resolve back to the
+      // 'disconnected' state when the cancel rejection propagates.
+      vscode.postMessage({ type: 'cancelConnect' });
     } else if (connState === 'connected') {
       vscode.postMessage({ type: 'disconnect' });
     }

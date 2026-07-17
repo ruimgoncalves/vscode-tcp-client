@@ -36,19 +36,22 @@ export type Envelope = {
 /**
  * Wraps a payload buffer with the prefix and suffix described by `spec`.
  *
- * When both `linePrefix` and `lineSuffix` are empty strings (the default
- * for all built-ins), the payload is wrapped once with the outer prefix
- * and suffix — a fast path that keeps the behavior byte-identical to the
- * previous single-wrap implementation.
+ * When both `linePrefix` and `lineSuffix` are empty strings, the
+ * payload is wrapped once with the outer prefix and suffix — a fast
+ * path that keeps the behavior byte-identical to the previous
+ * single-wrap implementation.
  *
  * When at least one of `linePrefix` / `lineSuffix` is non-empty, the
  * payload is split on `\n` (single byte 0x0A) and each line is wrapped
  * individually with the line-level prefix/suffix. Empty lines (from
  * leading, trailing, or consecutive `\n`s) are wrapped too, so a payload
  * ending in `\n` produces a trailing empty line that is also wrapped
- * — the right behavior for line-oriented protocols. Consecutive lines
- * are rejoined with a single `\n` byte. The whole per-line result is
- * then wrapped with the outer prefix and suffix.
+ * — the right behavior for line-oriented protocols. Lines are NOT
+ * rejoined with a synthetic byte — the user's `lineSuffix` is the
+ * per-line terminator, so they choose what (if anything) sits between
+ * lines by setting `lineSuffix` (e.g. `\r` for HL7) or by typing the
+ * separator into the payload itself. The whole per-line result is then
+ * wrapped with the outer prefix and suffix.
  */
 export function wrap(payload: Buffer, spec: EnvelopeSpec): Buffer {
   const prefixBytes = encodeMessage(spec.prefix, 'latin1');
@@ -63,6 +66,8 @@ export function wrap(payload: Buffer, spec: EnvelopeSpec): Buffer {
 
   // Per-line wrap. Split payload on \n (0x0A) and wrap each line,
   // preserving empty lines from leading/trailing/consecutive separators.
+  // No synthetic separator is emitted between wrapped lines — the user's
+  // `lineSuffix` is the per-line terminator.
   const wrapped: Buffer[] = [prefixBytes];
   let cursor = 0;
   while (cursor <= payload.length) {
@@ -71,7 +76,6 @@ export function wrap(payload: Buffer, spec: EnvelopeSpec): Buffer {
     const line = payload.subarray(cursor, lineEnd);
     wrapped.push(linePreBytes, line, lineSufBytes);
     if (nextSep === -1) { break; }
-    wrapped.push(Buffer.from([0x0a]));
     cursor = nextSep + 1;
   }
   wrapped.push(suffixBytes);
@@ -173,11 +177,11 @@ export function _loadBuiltinsForTests(): void {
   _registerBuiltin({
     id: 'hl7-mllp',
     label: 'HL7 v2 (MLLP framing)',
-    spec: { prefix: '\\x0B', suffix: '\\x1C\\r', linePrefix: '', lineSuffix: '' },
+    spec: { prefix: '\\x0B', suffix: '\\x1C', linePrefix: '', lineSuffix: '\\r' },
   });
   _registerBuiltin({
     id: 'hl7-llp',
     label: 'HL7 v2 (raw LLP, no VT)',
-    spec: { prefix: '', suffix: '\\x1C\\r', linePrefix: '', lineSuffix: '' },
+    spec: { prefix: '', suffix: '\\x1C', linePrefix: '', lineSuffix: '\\r' },
   });
 }
