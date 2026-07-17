@@ -24,6 +24,12 @@
     "configuration": {
       "title": "TCP Client",
       "properties": {
+        "tcpClient.connection.timeoutMs": {
+          "type": "integer",
+          "default": 10000,
+          "minimum": 0,
+          "markdownDescription": "Connect attempt timeout in milliseconds. Set to 0 to disable."
+        },
         "tcpClient.variables.custom": {
           "type": "array",
           "default": [],

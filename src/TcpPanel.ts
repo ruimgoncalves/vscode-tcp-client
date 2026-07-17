@@ -16,6 +16,7 @@ interface WebviewMessage {
   type:
     | 'connect'
     | 'disconnect'
+    | 'cancelConnect'
     | 'send'
     | 'getState'
     | 'getVariables'
@@ -219,6 +220,14 @@ export class TcpPanel {
       }
       case 'disconnect':
         this._tcpClient.disconnect();
+        break;
+      case 'cancelConnect':
+        // User clicked the Connect button while it was showing the
+        // "Cancel" label (see setUiState's connecting branch). Tear down
+        // the in-flight socket and reject the pending connect promise.
+        // Safe to call when the client isn't connecting — `cancel()` is
+        // a no-op in that case.
+        this._tcpClient.cancel();
         break;
       case 'send': {
         try {
@@ -964,8 +973,12 @@ export class TcpPanel {
       connectEl.disabled = false;
       sendEl.disabled = true;
     } else if (s === 'connecting') {
-      connectEl.textContent = 'Connecting\u2026';
-      connectEl.disabled = true;
+      // Keep the button enabled so the user can click it to cancel.
+      // Switching the label from "Connecting…" to "Cancel" signals
+      // the affordance; the click handler routes the click to
+      // { type: 'cancelConnect' } instead of starting a new connect.
+      connectEl.textContent = 'Cancel';
+      connectEl.disabled = false;
       sendEl.disabled = true;
     } else {
       connectEl.textContent = 'Disconnect';
@@ -1001,6 +1014,12 @@ export class TcpPanel {
       if (!s) { return; }
       setUiState('connecting');
       vscode.postMessage({ type: 'connect', server: s });
+    } else if (connState === 'connecting') {
+      // The button is enabled while connecting (label = "Cancel") so the
+      // user can abort a hung connect (firewall drop, half-open). The
+      // extension host's connect attempt will resolve back to the
+      // 'disconnected' state when the cancel rejection propagates.
+      vscode.postMessage({ type: 'cancelConnect' });
     } else if (connState === 'connected') {
       vscode.postMessage({ type: 'disconnect' });
     }
