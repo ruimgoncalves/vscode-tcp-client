@@ -3,14 +3,21 @@
   "displayName": "TCP Client",
   "icon": "assets/icon.png",
   "description": "Send and receive TCP messages from VS Code with escape-sequence support",
-  "version": "0.2.1",
+  "version": "0.2.4",
   "publisher": "ruigoncalves",
   "engines": {
     "vscode": "^1.85.0",
     "node": ">=20"
   },
-  "categories": ["Other"],
-  "keywords": ["tcp", "network", "socket", "client"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "tcp",
+    "network",
+    "socket",
+    "client"
+  ],
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
