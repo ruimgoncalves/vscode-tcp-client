@@ -998,7 +998,21 @@ export class TcpPanel {
     var e  = document.createElement('div'); e.className = 'e ' + cls;
     var t  = document.createElement('span'); t.className = 'ts'; t.textContent = ts();
     var ic = document.createElement('span'); ic.className = 'ic'; ic.textContent = icon;
-    var tx = document.createElement('span'); tx.className = 'tx'; tx.textContent = text;
+    var tx = document.createElement('span'); tx.className = 'tx';
+    // Render embedded '\n' as actual line breaks so multi-line protocol
+    // responses (HL7 segments, NRPE output, etc.) read naturally instead
+    // of as a single munged line. XSS-safe: each run uses textContent /
+    // createTextNode (no innerHTML) and only literal '\n' triggers a <br>.
+    // NOTE: formatBytes() returns the two-character sequence '\\' + 'n'
+    // for byte 0x0A (and '\\r' for 0x0D, '\\t' for 0x09), so we split on
+    // the literal two characters '\\' + 'n', not on an actual newline.
+    // Splitting on the rendered escape — not the underlying byte — is
+    // what makes line breaks visible in the log.
+    var parts = text.split('\\n');
+    for (var pi = 0; pi < parts.length; pi++) {
+      if (pi > 0) { tx.appendChild(document.createElement('br')); }
+      tx.appendChild(document.createTextNode(parts[pi]));
+    }
     e.appendChild(t); e.appendChild(ic); e.appendChild(tx);
     if (meta) {
       var m = document.createElement('span'); m.className = 'mt'; m.textContent = ' ' + meta;
