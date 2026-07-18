@@ -84,7 +84,7 @@ suite('Envelope dropdown populates text fields (headless E2E)', function () {
     assert.ok(html.includes('value="hl7-llp"'),
       'dropdown should include <option value="hl7-llp">');
     // PRESETS now ships as a JSON-encoded object on window.__TCP_BOOTSTRAP__
-    // (set by the inline bootstrap script tag), and media/main.js reads it
+    // (set by the inline bootstrap script tag), and out/webview/main.js reads it
     // back at load. The bootstrap payload must contain the 4-char escape
     // form for hl7-mllp's prefix, not the raw byte — otherwise the field
     // displays an invisible control char (Pattern 5c from

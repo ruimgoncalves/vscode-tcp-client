@@ -23,48 +23,91 @@
  * implicit when the script is at the end of `<body>`).
  */
 
-(function () {
-  var vscode    = acquireVsCodeApi();
-  var bootstrap = window.__TCP_BOOTSTRAP__ || {};
-  var PRESETS   = bootstrap.presets || {};
-  var serverEl  = document.getElementById('server');
-  var connectEl = document.getElementById('connectBtn');
-  var dotEl     = document.getElementById('dot');
-  var encEl     = document.getElementById('encoding');
-  var envEl     = document.getElementById('envelope');
-  var envFields = {
-    prefix:     document.getElementById('envelope-prefix'),
-    suffix:     document.getElementById('envelope-suffix'),
-    linePrefix: document.getElementById('envelope-linePrefix'),
-    lineSuffix: document.getElementById('envelope-lineSuffix'),
+// Force this file to be treated as a module so we can use the
+// `declare global` augmentation for `Window.__TCP_BOOTSTRAP__`.
+// Without an `export {}` (or any import/export), the file is parsed
+// as a legacy script and `declare global` is rejected with TS2669.
+// The empty export is intentional and has zero runtime cost.
+export {};
+
+/**
+ * The shape of the bootstrap payload the extension host injects via a
+ * nonce-tagged inline `<script>` before this external script loads.
+ * Defined as a type alias (not interface) so it composes cleanly with
+ * the `Window` global augmentation below.
+ */
+type TcpBootstrap = {
+  presets: Record<string, {
+    prefix: string;
+    suffix: string;
+    linePrefix: string;
+    lineSuffix: string;
+  }>;
+};
+
+declare global {
+  interface Window {
+    __TCP_BOOTSTRAP__?: TcpBootstrap;
+  }
+
+  // `acquireVsCodeApi()` and the `WebviewApi` interface are NOT in
+  // lib.dom — they're VS Code's webview sandbox injection. Declare
+  // them locally so the webview bundle stays self-contained (no
+  // @types/vscode dependency for the webview-side code, and no
+  // Node globals via @types/node either, per tsconfig.webview.json
+  // `types: []`).
+  function acquireVsCodeApi(): WebviewApi;
+
+  interface WebviewApi {
+    getState(): unknown;
+    setState(state: unknown): void;
+    postMessage(message: unknown): void;
+  }
+}
+
+(function (): void {
+  const vscode: WebviewApi = acquireVsCodeApi();
+  const bootstrap: TcpBootstrap = window.__TCP_BOOTSTRAP__ ?? { presets: {} };
+  const PRESETS: TcpBootstrap['presets'] = bootstrap.presets ?? {};
+
+  const serverEl = document.getElementById('server') as HTMLInputElement;
+  const connectEl = document.getElementById('connectBtn') as HTMLButtonElement;
+  const dotEl = document.getElementById('dot') as HTMLElement;
+  const encEl = document.getElementById('encoding') as HTMLSelectElement;
+  const envEl = document.getElementById('envelope') as HTMLSelectElement;
+  const envFields: Record<'prefix' | 'suffix' | 'linePrefix' | 'lineSuffix', HTMLInputElement> = {
+    prefix:     document.getElementById('envelope-prefix') as HTMLInputElement,
+    suffix:     document.getElementById('envelope-suffix') as HTMLInputElement,
+    linePrefix: document.getElementById('envelope-linePrefix') as HTMLInputElement,
+    lineSuffix: document.getElementById('envelope-lineSuffix') as HTMLInputElement,
   };
-  var envResets = {
-    prefix:     document.getElementById('envelope-reset-prefix'),
-    suffix:     document.getElementById('envelope-reset-suffix'),
-    linePrefix: document.getElementById('envelope-reset-linePrefix'),
-    lineSuffix: document.getElementById('envelope-reset-lineSuffix'),
+  const envResets: Record<'prefix' | 'suffix' | 'linePrefix' | 'lineSuffix', HTMLButtonElement> = {
+    prefix:     document.getElementById('envelope-reset-prefix') as HTMLButtonElement,
+    suffix:     document.getElementById('envelope-reset-suffix') as HTMLButtonElement,
+    linePrefix: document.getElementById('envelope-reset-linePrefix') as HTMLButtonElement,
+    lineSuffix: document.getElementById('envelope-reset-lineSuffix') as HTMLButtonElement,
   };
-  var envNotice = document.getElementById('envelope-notice');
-  var msgEl     = document.getElementById('msg');
-  var sendEl    = document.getElementById('sendBtn');
-  var clearEl   = document.getElementById('clearBtn');
-  var logEl     = document.getElementById('log');
-  var varsBodyEl = document.getElementById('varsBody');
-  var newVarNameEl  = document.getElementById('newVarName');
-  var newVarValueEl = document.getElementById('newVarValue');
-  var addVarBtnEl   = document.getElementById('addVarBtn');
-  var helpBtn        = document.getElementById('helpBtn');
-  var helpBackdrop   = document.getElementById('helpBackdrop');
-  var helpCloseBtn   = document.getElementById('helpCloseBtn');
-  var livePreviewToggle = document.getElementById('livePreviewToggle');
-  var escapeTable    = document.getElementById('escapeTable');
-  var varsTable      = document.getElementById('varsTable');
-  var connState = 'disconnected';
+  const envNotice = document.getElementById('envelope-notice') as HTMLElement;
+  const msgEl = document.getElementById('msg') as HTMLTextAreaElement;
+  const sendEl = document.getElementById('sendBtn') as HTMLButtonElement;
+  const clearEl = document.getElementById('clearBtn') as HTMLButtonElement;
+  const logEl = document.getElementById('log') as HTMLElement;
+  const varsBodyEl = document.getElementById('varsBody') as HTMLElement;
+  const newVarNameEl = document.getElementById('newVarName') as HTMLInputElement;
+  const newVarValueEl = document.getElementById('newVarValue') as HTMLInputElement;
+  const addVarBtnEl = document.getElementById('addVarBtn') as HTMLButtonElement;
+  const helpBtn = document.getElementById('helpBtn') as HTMLButtonElement;
+  const helpBackdrop = document.getElementById('helpBackdrop') as HTMLElement;
+  const helpCloseBtn = document.getElementById('helpCloseBtn') as HTMLButtonElement;
+  const livePreviewToggle = document.getElementById('livePreviewToggle') as HTMLInputElement;
+  const escapeTable = document.getElementById('escapeTable') as HTMLElement;
+  const varsTable = document.getElementById('varsTable') as HTMLElement;
+  let connState: 'disconnected' | 'connecting' | 'connected' = 'disconnected';
   // Holds the most recent variables snapshot from the extension.
-  var varsState = { custom: [] };
+  const varsState: { custom: { name: string; value: string }[] } = { custom: [] };
 
   // Cache the cheat-sheet data so the live-preview toggle doesn't refetch
-  var helpData = { escapes: [], builtins: [], userVars: [] };
+  const helpData: { escapes: { seq: string; meaning: string }[]; builtins: { syntax: string; description: string; preview?: string }[]; userVars: { name: string; value: string }[] } = { escapes: [], builtins: [], userVars: [] };
 
   // Restore session-scoped preferences from the webview state
   // (vscode.setState survives hide/show of the panel within a VS Code
@@ -74,7 +117,7 @@
   // The message text is intentionally NOT restored here: it comes from
   // extensionContext.globalState via a getPersistedMessage round-trip
   // below, so it survives VS Code restarts.
-  var saved = vscode.getState() || {};
+  const saved = (vscode.getState() ?? {}) as Record<string, string | undefined>;
   if (saved.server)   { serverEl.value = saved.server; }
   if (saved.encoding) { encEl.value    = saved.encoding; }
   if (saved.envelope) { envEl.value    = saved.envelope; }
@@ -85,7 +128,7 @@
   if (saved.envelopeLinePrefix !== undefined) { envFields.linePrefix.value = saved.envelopeLinePrefix; }
   if (saved.envelopeLineSuffix !== undefined) { envFields.lineSuffix.value = saved.envelopeLineSuffix; }
 
-  function persistPrefs() {
+  function persistPrefs(): void {
     vscode.setState({
       server: serverEl.value,
       encoding: encEl.value,
@@ -104,62 +147,64 @@
   // Envelope editor: prefilling, modified-state, reset, inline notice
   // ---------------------------------------------------------------------
 
-  function presetFor(id) {
-    return PRESETS[id] || PRESETS['none'];
+  function presetFor(id: string): TcpBootstrap['presets'][string] {
+    return PRESETS[id] ?? PRESETS['none'] ?? { prefix: '', suffix: '', linePrefix: '', lineSuffix: '' };
   }
 
-  function currentPreset() {
+  function currentPreset(): TcpBootstrap['presets'][string] {
     return presetFor(envEl.value || 'none');
   }
 
-  function isFieldModified(field) {
+  function isFieldModified(field: keyof typeof envFields): boolean {
     return envFields[field].value !== currentPreset()[field];
   }
 
-  function refreshResetButtons() {
+  function refreshResetButtons(): void {
     envResets.prefix.hidden     = !isFieldModified('prefix');
     envResets.suffix.hidden     = !isFieldModified('suffix');
     envResets.linePrefix.hidden = !isFieldModified('linePrefix');
     envResets.lineSuffix.hidden = !isFieldModified('lineSuffix');
   }
 
-  function showPresetNotice(text) {
+  function showPresetNotice(text: string): void {
     if (!envNotice) { return; }
     envNotice.textContent = text;
     envNotice.hidden = false;
-    if (envNotice._timer) { clearTimeout(envNotice._timer); }
-    envNotice._timer = setTimeout(function () { envNotice.hidden = true; }, 3000);
+    if ((envNotice as HTMLElement & { _timer?: ReturnType<typeof setTimeout> })._timer) {
+      clearTimeout((envNotice as HTMLElement & { _timer?: ReturnType<typeof setTimeout> })._timer);
+    }
+    (envNotice as HTMLElement & { _timer?: ReturnType<typeof setTimeout> })._timer = setTimeout(() => { envNotice.hidden = true; }, 3000);
   }
 
-  function fieldsMatchPreset() {
-    var p = currentPreset();
+  function fieldsMatchPreset(): boolean {
+    const p = currentPreset();
     return envFields.prefix.value     === p.prefix
         && envFields.suffix.value     === p.suffix
         && envFields.linePrefix.value === p.linePrefix
         && envFields.lineSuffix.value === p.lineSuffix;
   }
 
-  function applyPreset(id, opts) {
-    var p = presetFor(id);
+  function applyPreset(id: string, opts?: { notice?: boolean }): void {
+    const p = presetFor(id);
     envFields.prefix.value     = p.prefix;
     envFields.suffix.value     = p.suffix;
     envFields.linePrefix.value = p.linePrefix;
     envFields.lineSuffix.value = p.lineSuffix;
     refreshResetButtons();
     if (opts && opts.notice && !fieldsMatchPreset()) {
-      var labels = {
+      const labels: Record<string, string> = {
         'none':     'None (raw)',
         'hl7-mllp': 'HL7 v2 (MLLP framing)',
         'hl7-llp':  'HL7 v2 (raw LLP)',
       };
-      showPresetNotice('Replaced with ' + (labels[id] || id) + ' preset.');
+      showPresetNotice('Replaced with ' + (labels[id] ?? id) + ' preset.');
     }
   }
 
   // Switching the dropdown auto-fills the fields. We skip the notice if the
   // user just re-picks the same preset or if the fields already match.
-  envEl.addEventListener('change', function () {
-    var wasModified = !fieldsMatchPreset();
+  envEl.addEventListener('change', () => {
+    const wasModified = !fieldsMatchPreset();
     applyPreset(envEl.value, { notice: true });
     if (wasModified) {
       persistPrefs();
@@ -169,16 +214,16 @@
   });
 
   // Editing a field toggles its reset button (hidden when equal to preset).
-  ['prefix', 'suffix', 'linePrefix', 'lineSuffix'].forEach(function (f) {
-    envFields[f].addEventListener('input', function () {
+  (['prefix', 'suffix', 'linePrefix', 'lineSuffix'] as const).forEach((f) => {
+    envFields[f].addEventListener('input', () => {
       envResets[f].hidden = !isFieldModified(f);
       persistPrefs();
     });
   });
 
   // Per-field reset ↺ buttons: revert to the current preset's default.
-  ['prefix', 'suffix', 'linePrefix', 'lineSuffix'].forEach(function (f) {
-    envResets[f].addEventListener('click', function () {
+  (['prefix', 'suffix', 'linePrefix', 'lineSuffix'] as const).forEach((f) => {
+    envResets[f].addEventListener('click', () => {
       envFields[f].value = currentPreset()[f];
       envResets[f].hidden = true;
       persistPrefs();
@@ -193,7 +238,7 @@
   // populates the textarea on load.
   vscode.postMessage({ type: 'getPersistedMessage' });
 
-  function setUiState(s) {
+  function setUiState(s: 'disconnected' | 'connecting' | 'connected'): void {
     connState = s;
     connectEl.dataset.state = s;
     dotEl.dataset.state = s;
@@ -216,18 +261,18 @@
     }
   }
 
-  function ts() {
-    var d = new Date();
-    function p2(n) { return n < 10 ? '0'+n : ''+n; }
-    function p3(n) { return n < 10 ? '00'+n : n < 100 ? '0'+n : ''+n; }
+  function ts(): string {
+    const d = new Date();
+    const p2 = (n: number): string => n < 10 ? '0'+n : ''+n;
+    const p3 = (n: number): string => n < 10 ? '00'+n : n < 100 ? '0'+n : ''+n;
     return '['+p2(d.getHours())+':'+p2(d.getMinutes())+':'+p2(d.getSeconds())+'.'+p3(d.getMilliseconds())+']';
   }
 
-  function appendLog(cls, icon, text, meta) {
-    var e  = document.createElement('div'); e.className = 'e ' + cls;
-    var t  = document.createElement('span'); t.className = 'ts'; t.textContent = ts();
-    var ic = document.createElement('span'); ic.className = 'ic'; ic.textContent = icon;
-    var tx = document.createElement('span'); tx.className = 'tx';
+  function appendLog(cls: string, icon: string, text: string, meta?: string): void {
+    const e  = document.createElement('div'); e.className = 'e ' + cls;
+    const t  = document.createElement('span'); t.className = 'ts'; t.textContent = ts();
+    const ic = document.createElement('span'); ic.className = 'ic'; ic.textContent = icon;
+    const tx = document.createElement('span'); tx.className = 'tx';
     /*
      * Render embedded line breaks (the two-character escape backslash-n)
      * in multi-line protocol output (HL7 segments, NRPE, etc.) as actual
@@ -242,23 +287,23 @@
      * Split target: the literal two-character string backslash + n, which
      * is what formatBytes emits for byte 0x0A.
      */
-    var parts = text.split('\\n');
-    for (var pi = 0; pi < parts.length; pi++) {
+    const parts = text.split('\\n');
+    for (let pi = 0; pi < parts.length; pi++) {
       if (pi > 0) { tx.appendChild(document.createElement('br')); }
       tx.appendChild(document.createTextNode(parts[pi]));
     }
     e.appendChild(t); e.appendChild(ic); e.appendChild(tx);
     if (meta) {
-      var m = document.createElement('span'); m.className = 'mt'; m.textContent = ' ' + meta;
+      const m = document.createElement('span'); m.className = 'mt'; m.textContent = ' ' + meta;
       e.appendChild(m);
     }
     logEl.appendChild(e);
     logEl.scrollTop = logEl.scrollHeight;
   }
 
-  connectEl.addEventListener('click', function () {
+  connectEl.addEventListener('click', () => {
     if (connState === 'disconnected') {
-      var s = serverEl.value.trim();
+      const s = serverEl.value.trim();
       if (!s) { return; }
       setUiState('connecting');
       vscode.postMessage({ type: 'connect', server: s });
@@ -273,9 +318,9 @@
     }
   });
 
-  function doSend() {
+  function doSend(): void {
     if (connState !== 'connected') { return; }
-    var text = msgEl.value;
+    const text = msgEl.value;
     if (!text) { return; }
     vscode.postMessage({
       type: 'send',
@@ -290,39 +335,39 @@
   }
 
   sendEl.addEventListener('click', doSend);
-  msgEl.addEventListener('keydown', function (e) {
+  msgEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); doSend(); }
   });
-  clearEl.addEventListener('click', function () { logEl.innerHTML = ''; });
+  clearEl.addEventListener('click', () => { logEl.innerHTML = ''; });
 
   // -------------------------------------------------------------------------
   // Variables section
   // -------------------------------------------------------------------------
-  function renderVars() {
+  function renderVars(): void {
     // Custom variable list only — built-in variables (timestamp, seq, uuid)
     // are documented in the message textarea placeholder, not listed here,
     // because they're not user-editable.
     varsBodyEl.innerHTML = '';
     if (varsState.custom.length === 0) {
-      var empty = document.createElement('div');
+      const empty = document.createElement('div');
       empty.className = 'var-empty';
       empty.textContent = '(no user variables — add one below)';
       varsBodyEl.appendChild(empty);
     } else {
-      for (var i = 0; i < varsState.custom.length; i++) {
-        var v = varsState.custom[i];
-        var row = document.createElement('div');
+      for (let i = 0; i < varsState.custom.length; i++) {
+        const v = varsState.custom[i];
+        const row = document.createElement('div');
         row.className = 'var-row';
-        var nm = document.createElement('span');
+        const nm = document.createElement('span');
         nm.className = 'var-name'; nm.textContent = v.name;
-        var vv = document.createElement('span');
+        const vv = document.createElement('span');
         vv.className = 'var-value'; vv.textContent = v.value;
         vv.title = v.value;  // full value on hover for long values
-        var del = document.createElement('button');
+        const del = document.createElement('button');
         del.className = 'sec var-del'; del.textContent = '\u00d7';
         del.title = 'Delete ' + v.name;
-        del.addEventListener('click', (function (name) {
-          return function () {
+        del.addEventListener('click', ((name: string) => {
+          return () => {
             vscode.postMessage({ type: 'deleteVariable', name: name });
           };
         })(v.name));
@@ -335,88 +380,88 @@
   // -----------------------------------------------------------------
   // Syntax help modal
   // -----------------------------------------------------------------
-  function openHelp() {
+  function openHelp(): void {
     // Fetch fresh data each time so user vars reflect the latest settings
     vscode.postMessage({ type: 'getSyntaxHelp' });
     helpBackdrop.hidden = false;
   }
-  function closeHelp() {
+  function closeHelp(): void {
     helpBackdrop.hidden = true;
   }
   helpBtn.addEventListener('click', openHelp);
   helpCloseBtn.addEventListener('click', closeHelp);
-  helpBackdrop.addEventListener('click', function (e) {
+  helpBackdrop.addEventListener('click', (e) => {
     if (e.target === helpBackdrop) { closeHelp(); }
   });
-  document.addEventListener('keydown', function (e) {
+  document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !helpBackdrop.hidden) { closeHelp(); }
   });
   livePreviewToggle.addEventListener('change', renderVarsTable);
 
-  function makeHelpRow(td1Content, td2Content, onClick) {
-    var tr = document.createElement('tr');
+  function makeHelpRow(td1Content: HTMLElement, td2Content: string | Node, onClick: () => void): HTMLTableRowElement {
+    const tr = document.createElement('tr');
     tr.className = 'help-row';
     tr.title = 'Click to paste into the message';
-    var c1 = document.createElement('td');
+    const c1 = document.createElement('td');
     c1.appendChild(td1Content);
-    var c2 = document.createElement('td');
+    const c2 = document.createElement('td');
     if (typeof td2Content === 'string') { c2.textContent = td2Content; }
     else { c2.appendChild(td2Content); }
     tr.appendChild(c1); tr.appendChild(c2);
     tr.addEventListener('click', onClick);
     return tr;
   }
-  function makeCode(text) {
-    var code = document.createElement('code');
+  function makeCode(text: string): HTMLElement {
+    const code = document.createElement('code');
     code.textContent = text;
     return code;
   }
 
-  function renderEscapeTable() {
+  function renderEscapeTable(): void {
     escapeTable.innerHTML = '';
-    var htr = document.createElement('tr');
-    var h1 = document.createElement('th'); h1.textContent = 'Sequence';
-    var h2 = document.createElement('th'); h2.textContent = 'Meaning';
+    const htr = document.createElement('tr');
+    const h1 = document.createElement('th'); h1.textContent = 'Sequence';
+    const h2 = document.createElement('th'); h2.textContent = 'Meaning';
     htr.appendChild(h1); htr.appendChild(h2);
     escapeTable.appendChild(htr);
-    for (var i = 0; i < helpData.escapes.length; i++) {
-      var e = helpData.escapes[i];
-      escapeTable.appendChild(makeHelpRow(makeCode(e.seq), e.meaning, (function (text) {
-        return function () { pasteIntoMessage(text); closeHelp(); };
+    for (let i = 0; i < helpData.escapes.length; i++) {
+      const e = helpData.escapes[i];
+      escapeTable.appendChild(makeHelpRow(makeCode(e.seq), e.meaning, ((text: string) => {
+        return () => { pasteIntoMessage(text); closeHelp(); };
       })(e.seq)));
     }
   }
 
-  function renderVarsTable() {
+  function renderVarsTable(): void {
     varsTable.innerHTML = '';
-    var htr = document.createElement('tr');
-    var h1 = document.createElement('th'); h1.textContent = 'Syntax';
-    var h2 = document.createElement('th'); h2.textContent = 'Description';
+    const htr = document.createElement('tr');
+    const h1 = document.createElement('th'); h1.textContent = 'Syntax';
+    const h2 = document.createElement('th'); h2.textContent = 'Description';
     htr.appendChild(h1); htr.appendChild(h2);
     varsTable.appendChild(htr);
 
-    var i, tr;
-    for (i = 0; i < helpData.builtins.length; i++) {
-      var b = helpData.builtins[i];
-      var desc;
+    let tr: HTMLTableRowElement;
+    for (let i = 0; i < helpData.builtins.length; i++) {
+      const b = helpData.builtins[i];
+      let desc: Node;
       if (livePreviewToggle.checked && b.preview) {
         desc = document.createElement('span');
         desc.textContent = b.description;
-        var arrow = document.createElement('span');
+        const arrow = document.createElement('span');
         arrow.className = 'preview-arrow';
         arrow.textContent = '\u2192 ' + b.preview;
         desc.appendChild(arrow);
       } else {
         desc = document.createTextNode(b.description);
       }
-      varsTable.appendChild(makeHelpRow(makeCode(b.syntax), desc, (function (text) {
-        return function () { pasteIntoMessage(text); closeHelp(); };
+      varsTable.appendChild(makeHelpRow(makeCode(b.syntax), desc, ((text: string) => {
+        return () => { pasteIntoMessage(text); closeHelp(); };
       })(b.syntax)));
     }
 
     if (helpData.userVars.length === 0) {
       tr = document.createElement('tr');
-      var td = document.createElement('td');
+      const td = document.createElement('td');
       td.colSpan = 2;
       td.style.color = 'var(--vscode-descriptionForeground)';
       td.style.fontStyle = 'italic';
@@ -424,73 +469,88 @@
       tr.appendChild(td);
       varsTable.appendChild(tr);
     } else {
-      for (var j = 0; j < helpData.userVars.length; j++) {
-        var uv = helpData.userVars[j];
-        var name = '{{' + uv.name + '}}';
-        var desc2;
+      for (let j = 0; j < helpData.userVars.length; j++) {
+        const uv = helpData.userVars[j];
+        const name = '{{' + uv.name + '}}';
+        let desc2: Node;
         if (livePreviewToggle.checked) {
           desc2 = document.createElement('span');
           desc2.textContent = 'User variable';
-          var arrow2 = document.createElement('span');
+          const arrow2 = document.createElement('span');
           arrow2.className = 'preview-arrow';
           arrow2.textContent = '\u2192 ' + uv.value;
           desc2.appendChild(arrow2);
         } else {
           desc2 = document.createTextNode('User variable');
         }
-        varsTable.appendChild(makeHelpRow(makeCode(name), desc2, (function (text) {
-          return function () { pasteIntoMessage(text); closeHelp(); };
+        varsTable.appendChild(makeHelpRow(makeCode(name), desc2, ((text: string) => {
+          return () => { pasteIntoMessage(text); closeHelp(); };
         })(name)));
       }
     }
   }
 
-  addVarBtnEl.addEventListener('click', function () {
-    var name = newVarNameEl.value.trim();
-    var value = newVarValueEl.value;
+  addVarBtnEl.addEventListener('click', () => {
+    const name = newVarNameEl.value.trim();
+    const value = newVarValueEl.value;
     if (!name) { return; }  // empty inputs are rejected silently
     vscode.postMessage({ type: 'addVariable', name: name, value: value });
     newVarNameEl.value = '';
     newVarValueEl.value = '';
   });
   // Pressing Enter in the value field also submits the form.
-  newVarValueEl.addEventListener('keydown', function (e) {
+  newVarValueEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); addVarBtnEl.click(); }
   });
-  newVarNameEl.addEventListener('keydown', function (e) {
+  newVarNameEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); addVarBtnEl.click(); }
   });
 
-  function pasteIntoMessage(text) {
-    var start = msgEl.selectionStart || 0;
-    var end   = msgEl.selectionEnd || 0;
+  function pasteIntoMessage(text: string): void {
+    const start = msgEl.selectionStart || 0;
+    const end   = msgEl.selectionEnd || 0;
     msgEl.value = msgEl.value.substring(0, start) + text + msgEl.value.substring(end);
-    var newPos = start + text.length;
+    const newPos = start + text.length;
     msgEl.selectionStart = msgEl.selectionEnd = newPos;
     msgEl.focus();
-    persist();
+    persistPrefs();
   }
 
-  window.addEventListener('message', function (ev) {
-    var m = ev.data;
+  window.addEventListener('message', (ev: MessageEvent) => {
+    const m = ev.data as {
+      type: string;
+      state?: 'disconnected' | 'connecting' | 'connected';
+      server?: string;
+      display?: string;
+      bytes?: number;
+      responseTime?: number | null;
+      message?: string;
+      reason?: string;
+      custom?: { name: string; value: string }[];
+      list?: { id: string; label: string }[];
+      selectedId?: string;
+      escapes?: { seq: string; meaning: string }[];
+      builtins?: { syntax: string; description: string; preview?: string }[];
+      userVars?: { name: string; value: string }[];
+    };
     if (m.type === 'stateChange') {
-      var prev = connState;
-      setUiState(m.state);
+      const prev = connState;
+      setUiState(m.state ?? 'disconnected');
       if (m.state === 'connected' && prev !== 'connected') {
-        appendLog('info', '\u26a1', 'Connected to ' + m.server);
+        appendLog('info', '\u26a1', 'Connected to ' + (m.server ?? ''));
       } else if (m.state === 'disconnected' && prev === 'connected') {
         appendLog('info', '\u2715', 'Disconnected');
       }
     } else if (m.type === 'sent') {
-      appendLog('sent', '\u25b6', m.display, '(' + m.bytes + ' bytes)');
+      appendLog('sent', '\u25b6', m.display ?? '', '(' + (m.bytes ?? 0) + ' bytes)');
     } else if (m.type === 'received') {
-      var meta = m.responseTime != null
-        ? '(' + m.responseTime + ' ms, ' + m.bytes + ' bytes)'
-        : '(' + m.bytes + ' bytes)';
-      appendLog('recv', '\u25c4', m.display, meta);
+      const meta = m.responseTime != null
+        ? '(' + m.responseTime + ' ms, ' + (m.bytes ?? 0) + ' bytes)'
+        : '(' + (m.bytes ?? 0) + ' bytes)';
+      appendLog('recv', '\u25c4', m.display ?? '', meta);
     } else if (m.type === 'error') {
       setUiState('disconnected');
-      appendLog('err', '\u26a0', m.message);
+      appendLog('err', '\u26a0', m.message ?? '');
     } else if (m.type === 'envelopes') {
       // Rebuild the <select id="envelope"> client-side from the host's
       // authoritative list. Triggered by: panel open (via getEnvelopes
@@ -506,8 +566,8 @@
       // parser entirely).
       if (m.list && envEl) {
         while (envEl.firstChild) { envEl.removeChild(envEl.firstChild); }
-        m.list.forEach(function (e) {
-          var opt = document.createElement('option');
+        m.list.forEach((e) => {
+          const opt = document.createElement('option');
           opt.value = e.id;
           opt.textContent = e.label;   // textContent escapes, no HTML interpretation
           envEl.appendChild(opt);
@@ -524,7 +584,7 @@
     } else if (m.type === 'envelopeError') {
       appendLog('err', '\u26a0', 'Envelope: ' + (m.reason || 'unknown error'));
     } else if (m.type === 'variables') {
-      varsState = { custom: m.custom || [] };
+      varsState.custom = m.custom ?? [];
       renderVars();
     } else if (m.type === 'persistedMessage') {
       // Populate the textarea with the last-saved message text on load.
@@ -534,9 +594,9 @@
         msgEl.value = m.message || '';
       }
     } else if (m.type === 'syntaxHelp') {
-      helpData.escapes  = m.escapes || [];
-      helpData.builtins = m.builtins || [];
-      helpData.userVars = m.userVars || [];
+      helpData.escapes  = m.escapes ?? [];
+      helpData.builtins = m.builtins ?? [];
+      helpData.userVars = m.userVars ?? [];
       renderEscapeTable();
       renderVarsTable();
     }
@@ -545,7 +605,7 @@
   // Persist the message text on every input event. Stored in
   // extensionContext.globalState on the extension host so it survives
   // VS Code restarts. Fire-and-forget on the extension side.
-  msgEl.addEventListener('input', function () {
+  msgEl.addEventListener('input', () => {
     vscode.postMessage({ type: 'persistMessage', message: msgEl.value });
   });
 
@@ -574,23 +634,23 @@
 //   - Save dialog:       #savePresetDialog (+ #savePresetLabel, #savePresetForm, #savePresetCancel)
 //   - Delete dialog:     #deletePresetDialog (+ #deletePresetMessage, #deletePresetForm, #deletePresetCancel)
 // ---------------------------------------------------------------------------
-(function () {
-  var vscode = acquireVsCodeApi();
-  var BUILTIN_IDS = ['none', 'hl7-mllp', 'hl7-llp'];
+(function (): void {
+  const vscode: WebviewApi = acquireVsCodeApi();
+  const BUILTIN_IDS: string[] = ['none', 'hl7-mllp', 'hl7-llp'];
 
-  var envelopeSelect = document.getElementById('envelope');
-  var saveBtn       = document.getElementById('envelope-save-btn');
-  var deleteBtn     = document.getElementById('envelope-delete-btn');
-  var saveDialog    = document.getElementById('savePresetDialog');
-  var deleteDialog  = document.getElementById('deletePresetDialog');
-  var saveLabel     = document.getElementById('savePresetLabel');
-  var saveCancel    = document.getElementById('savePresetCancel');
-  var deleteCancel  = document.getElementById('deletePresetCancel');
-  var deleteMessage = document.getElementById('deletePresetMessage');
-  var prefixField       = document.getElementById('envelope-prefix');
-  var suffixField       = document.getElementById('envelope-suffix');
-  var linePrefixField   = document.getElementById('envelope-linePrefix');
-  var lineSuffixField   = document.getElementById('envelope-lineSuffix');
+  const envelopeSelect = document.getElementById('envelope') as HTMLSelectElement | null;
+  const saveBtn       = document.getElementById('envelope-save-btn') as HTMLButtonElement | null;
+  const deleteBtn     = document.getElementById('envelope-delete-btn') as HTMLButtonElement | null;
+  const saveDialog    = document.getElementById('savePresetDialog') as HTMLDialogElement | null;
+  const deleteDialog  = document.getElementById('deletePresetDialog') as HTMLDialogElement | null;
+  const saveLabel     = document.getElementById('savePresetLabel') as HTMLInputElement | null;
+  const saveCancel    = document.getElementById('savePresetCancel') as HTMLButtonElement | null;
+  const deleteCancel  = document.getElementById('deletePresetCancel') as HTMLButtonElement | null;
+  const deleteMessage = document.getElementById('deletePresetMessage') as HTMLElement | null;
+  const prefixField       = document.getElementById('envelope-prefix') as HTMLInputElement | null;
+  const suffixField       = document.getElementById('envelope-suffix') as HTMLInputElement | null;
+  const linePrefixField   = document.getElementById('envelope-linePrefix') as HTMLInputElement | null;
+  const lineSuffixField   = document.getElementById('envelope-lineSuffix') as HTMLInputElement | null;
 
   // If any element is missing (partial embed during refactor), bail
   // rather than letting the IIFE throw a null deref that takes down
@@ -600,30 +660,30 @@
     return;
   }
 
-  function isCustomSelected() {
-    return BUILTIN_IDS.indexOf(envelopeSelect.value) === -1;
+  function isCustomSelected(): boolean {
+    return BUILTIN_IDS.indexOf(envelopeSelect!.value) === -1;
   }
 
-  function refreshDeleteButton() {
-    deleteBtn.disabled = !isCustomSelected();
+  function refreshDeleteButton(): void {
+    deleteBtn!.disabled = !isCustomSelected();
   }
 
   refreshDeleteButton();
   envelopeSelect.addEventListener('change', refreshDeleteButton);
 
-  saveBtn.addEventListener('click', function () {
-    saveLabel.value = '';
-    saveDialog.showModal();
-    saveLabel.focus();
+  saveBtn.addEventListener('click', () => {
+    saveLabel!.value = '';
+    saveDialog!.showModal();
+    saveLabel!.focus();
   });
 
-  saveCancel.addEventListener('click', function () {
-    saveDialog.close('cancel');
+  saveCancel.addEventListener('click', () => {
+    saveDialog!.close('cancel');
   });
 
-  saveDialog.addEventListener('close', function () {
-    if (saveDialog.returnValue === 'cancel') { return; }
-    var label = saveLabel.value.trim();
+  saveDialog.addEventListener('close', () => {
+    if (saveDialog!.returnValue === 'cancel') { return; }
+    const label = saveLabel!.value.trim();
     if (!label) { return; }
     vscode.postMessage({
       type: 'saveEnvelope',
@@ -635,23 +695,23 @@
     });
   });
 
-  deleteBtn.addEventListener('click', function () {
+  deleteBtn.addEventListener('click', () => {
     if (!isCustomSelected()) { return; }
-    var opt = envelopeSelect.options[envelopeSelect.selectedIndex];
-    var label = opt ? opt.text : envelopeSelect.value;
-    deleteMessage.textContent = 'Delete the preset "' + label + '"?';
-    deleteDialog.showModal();
+    const opt = envelopeSelect!.options[envelopeSelect!.selectedIndex];
+    const label = opt ? opt.text : envelopeSelect!.value;
+    deleteMessage!.textContent = 'Delete the preset "' + label + '"?';
+    deleteDialog!.showModal();
   });
 
-  deleteCancel.addEventListener('click', function () {
-    deleteDialog.close('cancel');
+  deleteCancel.addEventListener('click', () => {
+    deleteDialog!.close('cancel');
   });
 
-  deleteDialog.addEventListener('close', function () {
-    if (deleteDialog.returnValue === 'cancel') { return; }
+  deleteDialog.addEventListener('close', () => {
+    if (deleteDialog!.returnValue === 'cancel') { return; }
     vscode.postMessage({
       type: 'deleteEnvelope',
-      id: envelopeSelect.value
+      id: envelopeSelect!.value
     });
   });
 })();

@@ -7,13 +7,13 @@
  * touching the 1400-line `TcpPanel.ts` template.
  *
  * The IDs (`#envelope-save-btn`, `#savePresetDialog`, etc.) are the
- * canonical contract with `media/main.js` (the Save/Delete button
+ * canonical contract with `out/webview/main.js` (the Save/Delete button
  * IIFE was formerly exported as a string from `panelButtons.ts` and
  * inlined at the end of `TcpPanel.ts`'s webview template literal;
  * after the external-resources refactor that IIFE lives in
- * `media/main.js` next to the main panel IIFE, so the IDs and event
- * wiring are the single source of truth). If you rename them here,
- * rename them in `main.js`. The check is enforced by the
+ * `out/webview/main.js` next to the main panel IIFE, so the IDs and
+ * event wiring are the single source of truth). If you rename them
+ * here, rename them in `main.ts`. The check is enforced by the
  * `scripts/check-webview-js.js` guard.
  *
  * The function takes `envelopeOptions` (the rendered <option> tags,

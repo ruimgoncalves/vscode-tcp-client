@@ -167,10 +167,15 @@ export class TcpPanel {
         enableScripts: true,
         retainContextWhenHidden: true,
         // Allow the webview to load external CSS/JS from media/panel.css
-        // and media/main.js. Without this, asWebviewUri() produces a URL
+        // and out/webview/main.js. Without this, asWebviewUri() produces a URL
         // the webview cannot fetch (CSP + webview sandbox blocks anything
         // not in localResourceRoots).
-        localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')],
+        localResourceRoots: [
+          vscode.Uri.joinPath(extensionUri, 'media'),
+          // Webview JS lives under out/webview/ now (compiled from
+          // src/webview/main.ts via tsconfig.webview.json).
+          vscode.Uri.joinPath(extensionUri, 'out', 'webview'),
+        ],
       }
     );
     TcpPanel.currentPanel = new TcpPanel(panel, extensionUri, extensionContext);
@@ -419,12 +424,13 @@ export class TcpPanel {
       .join('');
 
     // External CSS/JS resources shipped via media/panel.css and
-    // media/main.js. Resolve them through asWebviewUri() so VS Code
-    // generates the special https://*.vscode-cdn.net URL the webview
-    // can actually fetch (relative paths would 404). See:
+    // out/webview/main.js (compiled from src/webview/main.ts by
+    // tsconfig.webview.json). Resolve them through asWebviewUri() so
+    // VS Code generates the special https://*.vscode-cdn.net URL the
+    // webview can actually fetch (relative paths would 404). See:
     // https://code.visualstudio.com/api/extension-guides/webview#loading-local-content
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'panel.css'));
-    const mainScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'main.js'));
+    const mainScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'main.js'));
 
     // Ship the PRESETS map (per-render envelope specs) into the webview
     // via a tiny nonce-tagged inline bootstrap script. main.js reads
