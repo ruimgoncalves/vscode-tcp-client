@@ -83,10 +83,24 @@ suite('Envelope dropdown populates text fields (headless E2E)', function () {
       'dropdown should include <option value="hl7-mllp">');
     assert.ok(html.includes('value="hl7-llp"'),
       'dropdown should include <option value="hl7-llp">');
-    // The var PRESETS = ... block must contain the 4-char escape form,
-    // not the raw byte. Look for the literal sequence in the JSON.
-    assert.ok(html.includes('\\\\x0B'),
-      `PRESETS JSON should contain the literal escape "\\\\x0B" (4 chars); inspect the rendered html for ${JSON.stringify(html.match(/var PRESETS = ([^;]+);/)?.[1]?.slice(0,200))}`);
+    // PRESETS now ships as a JSON-encoded object on window.__TCP_BOOTSTRAP__
+    // (set by the inline bootstrap script tag), and media/main.js reads it
+    // back at load. The bootstrap payload must contain the 4-char escape
+    // form for hl7-mllp's prefix, not the raw byte — otherwise the field
+    // displays an invisible control char (Pattern 5c from
+    // `debugging-template-literal-embedded-js`).
+    //
+    // Extract the JSON payload between `presets: {` and the closing `};`.
+    // The payload contains three entries (none, hl7-mllp, hl7-llp); we
+    // capture the whole object so the subsequent assertion finds the
+    // escape sequence in hl7-mllp's prefix.
+    const m = html.match(/window\.__TCP_BOOTSTRAP__\s*=\s*\{[\s\S]*?presets:\s*(\{[\s\S]*?\})\s*\};/);
+    if (!m) {
+      assert.fail(`bootstrap script should set window.__TCP_BOOTSTRAP__.presets; inspect the rendered html for ${JSON.stringify(html.match(/window\.__TCP_BOOTSTRAP__[^<]*/)?.[0]?.slice(0,200))}`);
+    }
+    const presetsLiteral = m[1];
+    assert.ok(presetsLiteral.includes('\\\\x0B'),
+      `PRESETS JSON should contain the literal escape "\\\\x0B" (4 chars); got ${JSON.stringify(presetsLiteral.slice(0, 400))}`);
   });
 
   test('sending a send message with envelope=hl7-mllp produces the correct wire bytes', async () => {

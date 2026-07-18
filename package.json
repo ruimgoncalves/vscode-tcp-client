@@ -13,12 +13,23 @@
   "keywords": ["tcp", "network", "socket", "client"],
   "activationEvents": [],
   "main": "./out/extension.js",
+  "files": [
+    "out/**",
+    "media/**",
+    "assets/**",
+    "package.json",
+    "README.md"
+  ],
   "contributes": {
     "commands": [
       {
         "command": "tcpClient.openPanel",
         "title": "TCP Client: Open Panel",
         "icon": "$(plug)"
+      },
+      {
+        "command": "tcpClient.prefillHL7Envelopes",
+        "title": "TCP Client: Prefill HL7 Envelopes"
       }
     ],
     "configuration": {
