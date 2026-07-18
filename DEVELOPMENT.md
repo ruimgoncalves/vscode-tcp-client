@@ -184,11 +184,11 @@ syntax as `prefix` / `suffix` (e.g. `\x02`, `\n`, `\r`).
 ### Custom envelopes
 
 Custom envelopes are read from `vscode.workspace.getConfiguration('tcpClient')
-.get('envelopes.custom')` at panel creation time, plus on every
-`getEnvelopes` request from the webview. The schema is declared in
+.get('envelopes.custom')` at panel creation time. The schema is declared in
 `package.json` under `contributes.configuration` and is therefore editable
 via VS Code's Settings UI as well as `settings.json`. Adding a new custom
-envelope requires no code changes.
+envelope requires no code changes. External edits to the setting take
+effect on the next panel open, matching the `variables.custom` behaviour.
 
 Every custom envelope accepts the full `EnvelopeSpec` shape: `prefix`,
 `suffix`, plus the optional per-line fields

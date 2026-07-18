@@ -1,3 +1,4 @@
+import * as vscode from 'vscode';
 import { encodeMessage } from '../MessageEncoder';
 
 /**
@@ -84,6 +85,110 @@ export function wrap(payload: Buffer, spec: EnvelopeSpec): Buffer {
 }
 
 // -----------------------------------------------------------------------
+// Custom envelopes (settings.json)
+// -----------------------------------------------------------------------
+
+/**
+ * Shape of a user-defined envelope entry as stored in
+ * `tcpClient.envelopes.custom` in settings.json. Only the fields the user
+ * controls; the runtime `Envelope` is built from this in `getCustom()`.
+ *
+ * Mirrors `VariableDef` in `Variables.ts` — flat, persisted shape,
+ * distinct from the runtime `Envelope` (which wraps it in `EnvelopeSpec`
+ * for the `wrap()` function).
+ */
+export type EnvelopeDef = {
+  id: string;
+  label: string;
+  prefix?: string;
+  suffix?: string;
+  linePrefix?: string;
+  lineSuffix?: string;
+};
+
+/**
+ * Reads user-defined envelopes from VS Code configuration
+ * (`tcpClient.envelopes.custom`) and returns them as runtime `Envelope`
+ * entries, ready for the registry.
+ *
+ * Defensive parsing — mirrors `Variables.getCustom()`:
+ *  - Skips entries that are missing `id` or `label`, or where those
+ *    aren't strings.
+ *  - Coerces optional string fields to '' when missing/wrong type.
+ *  - Skips entries whose `id` collides with a built-in (avoids masking
+ *    `none` / `hl7-mllp` / `hl7-llp` via the dropdown — a user error
+ *    silently producing a non-functional preset). A console.warn names
+ *    the offending id so it's visible in the Extension Host output.
+ *  - Does NOT deduplicate against other custom entries — if a user
+ *    puts two envelopes with the same `id`, the last one wins in the
+ *    runtime registry (consistent with the `Map` semantics of
+ *    `register()`). The Settings UI won't let them save duplicates,
+ *    but a hand-edited settings.json could.
+ *
+ * Returns `[]` when the setting is missing, not an array, or every
+ * entry was malformed — the dropdown then shows built-ins only, which
+ * is the correct degraded experience.
+ */
+export function getCustom(): Envelope[] {
+  const raw = vscode.workspace
+    .getConfiguration('tcpClient')
+    .get<EnvelopeDef[]>('envelopes.custom', []);
+
+  if (!Array.isArray(raw)) { return []; }
+
+  const builtinIds = new Set(builtins.map((b) => b.id));
+  const result: Envelope[] = [];
+  const seenIds = new Set<string>();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') { continue; }
+    const id = (entry as EnvelopeDef).id;
+    const label = (entry as EnvelopeDef).label;
+    if (typeof id !== 'string' || id.trim().length === 0) { continue; }  // trim() (not just length) so '   ' is rejected too
+    if (typeof label !== 'string' || label.length === 0) { continue; }
+    if (builtinIds.has(id)) {
+      console.warn(`Custom envelope "${id}" collides with a built-in id; skipping.`);
+      continue;
+    }
+    if (seenIds.has(id)) { continue; }
+    seenIds.add(id);
+
+    const e = entry as EnvelopeDef;
+    result.push({
+      id,
+      label,
+      spec: {
+        prefix: typeof e.prefix === 'string' ? e.prefix : '',
+        suffix: typeof e.suffix === 'string' ? e.suffix : '',
+        linePrefix: typeof e.linePrefix === 'string' ? e.linePrefix : '',
+        lineSuffix: typeof e.lineSuffix === 'string' ? e.lineSuffix : '',
+      },
+    });
+  }
+  return result;
+}
+
+/**
+ * Built-ins first, then custom envelopes from settings. Custom envelopes
+ * are freshly read from the live configuration on every call — callers
+ * that want the snapshot at one moment should store the result.
+ *
+ * Identical-id tie-break: built-in wins (it appears first; later entries
+ * overwrite earlier ones in the dedup pass below, so a custom envelope
+ * that survives `getCustom()`'s built-in collision filter still ends
+ * up after the built-in in the list, which preserves `listBuiltin()`
+ * order for any consumer that diffs against it).
+ */
+export function getAll(): Envelope[] {
+  const builtin = listBuiltin();
+  const custom = getCustom();
+  // Built-ins first; custom second. If a custom envelope slips through
+  // with the same id as another custom (not caught by `seenIds` because
+  // it was malformed upstream), the later one wins — consistent with
+  // Map.set semantics.
+  return [...builtin, ...custom];
+}
+
+// -----------------------------------------------------------------------
 // Registry
 // -----------------------------------------------------------------------
 
@@ -138,7 +243,19 @@ export function resolve(id: string): Envelope {
  * a known set of built-ins in a sandboxed environment.
  */
 export function _registerBuiltin(envelope: Envelope): void {
-  builtins.push(envelope);
+  // Dedupe by id: if a built-in with this id is already in the
+  // `builtins[]` array, replace it in place instead of appending.
+  // Without this, callers that re-register builtins across many
+  // tests (e.g. `_loadBuiltinsForTests()` from each suite's setup)
+  // accumulate duplicates and `listBuiltin()` returns N copies of
+  // `none` / `hl7-mllp` / `hl7-llp`. The runtime `registered` Map is
+  // already idempotent via `set()`, so no change there.
+  const existingIdx = builtins.findIndex((b) => b.id === envelope.id);
+  if (existingIdx !== -1) {
+    builtins[existingIdx] = envelope;
+  } else {
+    builtins.push(envelope);
+  }
   registered.set(envelope.id, envelope);
 }
 

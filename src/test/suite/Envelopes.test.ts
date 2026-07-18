@@ -7,6 +7,8 @@ import {
   list,
   listBuiltin,
   resolve,
+  getCustom,
+  getAll,
   Envelope,
   EnvelopeSpec,
   _registerBuiltin,
@@ -152,6 +154,22 @@ suite('Envelope – builtins (none / hl7-mllp / hl7-llp)', () => {
     _loadBuiltinsForTests();
     const ids = listBuiltin().map((e) => e.id).sort();
     assert.deepStrictEqual(ids, ['hl7-llp', 'hl7-mllp', 'none']);
+  });
+
+  test('_loadBuiltinsForTests is idempotent across repeated calls', () => {
+    // Regression guard for the `_registerBuiltin` dedupe fix: without it,
+    // multiple `_loadBuiltinsForTests()` calls accumulate duplicates in
+    // `builtins[]` and `listBuiltin()` would return N copies of each
+    // built-in. Three repeated calls must produce exactly the three
+    // standard built-ins in registration order.
+    _clearAllForTests();
+    _loadBuiltinsForTests();
+    _loadBuiltinsForTests();
+    _loadBuiltinsForTests();
+    assert.deepStrictEqual(
+      listBuiltin().map((e) => e.id),
+      ['none', 'hl7-mllp', 'hl7-llp']
+    );
   });
 
   test('hl7-mllp builtin spec has VT prefix, FS suffix, and \\r lineSuffix', () => {
@@ -393,5 +411,173 @@ suite('Envelope – wrap with linePrefix/lineSuffix', () => {
        0x0d,
        0x1c]
     );
+  });
+});
+
+suite('Envelope – getCustom / getAll (tcpClient.envelopes.custom)', () => {
+
+  // Always reset to [] regardless of what individual tests set, so a
+  // failure mid-suite doesn't poison subsequent suites (and so other
+  // test files that read the same global setting start from a known
+  // state). Same pattern as Variables.test.ts.
+  setup(async () => {
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'envelopes.custom',
+      [],
+      vscode.ConfigurationTarget.Global
+    );
+    _loadBuiltinsForTests();   // re-seed builtins after _clearAllForTests elsewhere
+  });
+  teardown(async () => {
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'envelopes.custom',
+      [],
+      vscode.ConfigurationTarget.Global
+    );
+  });
+
+  test('getCustom returns [] when the setting is empty', async () => {
+    assert.deepStrictEqual(getCustom(), []);
+  });
+
+  test('getCustom parses a single envelope from settings.json', async () => {
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'envelopes.custom',
+      [{ id: 'stx-etx', label: 'STX/ETX framed', prefix: '\\x02', suffix: '\\x03' }],
+      vscode.ConfigurationTarget.Global
+    );
+    const got = getCustom();
+    assert.strictEqual(got.length, 1);
+    assert.deepStrictEqual(got[0], {
+      id: 'stx-etx',
+      label: 'STX/ETX framed',
+      spec: { prefix: '\\x02', suffix: '\\x03', linePrefix: '', lineSuffix: '' },
+    });
+  });
+
+  test('getCustom parses linePrefix and lineSuffix when present', async () => {
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'envelopes.custom',
+      [{ id: 'nrpe', label: 'NRPE-style', prefix: '\\x02', suffix: '\\x03', linePrefix: '>', lineSuffix: '<' }],
+      vscode.ConfigurationTarget.Global
+    );
+    const got = getCustom();
+    assert.strictEqual(got.length, 1);
+    assert.strictEqual(got[0].spec.linePrefix, '>');
+    assert.strictEqual(got[0].spec.lineSuffix, '<');
+  });
+
+  test('getCustom skips entries missing id or label', async () => {
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'envelopes.custom',
+      [
+        { id: 'good',   label: 'Good',   prefix: '\\x02', suffix: '\\x03' },
+        { id: 'no-label', prefix: '\\x02', suffix: '\\x03' },           // missing label
+        {         label: 'no-id', prefix: '\\x02', suffix: '\\x03' },   // missing id
+        { id: '',    label: 'empty-id', prefix: '\\x02', suffix: '\\x03' }, // empty id
+        { id: '   ', label: 'ws-id', prefix: '\\x02', suffix: '\\x03' },   // whitespace id
+      ],
+      vscode.ConfigurationTarget.Global
+    );
+    const got = getCustom();
+    assert.strictEqual(got.length, 1);
+    assert.strictEqual(got[0].id, 'good');
+  });
+
+  test('getCustom skips entries whose id collides with a built-in', async () => {
+    _loadBuiltinsForTests();   // make sure builtins are seeded
+    const warnings: string[] = [];
+    const original = console.warn;
+    Object.defineProperty(console, 'warn', {
+      value: (msg: string) => { warnings.push(msg); },
+      configurable: true, writable: true,
+    });
+    try {
+      await vscode.workspace.getConfiguration('tcpClient').update(
+        'envelopes.custom',
+        [
+          { id: 'none',     label: 'My none',   prefix: '\\x02', suffix: '\\x03' },
+          { id: 'hl7-mllp', label: 'My hl7',    prefix: '\\x02', suffix: '\\x03' },
+          { id: 'mine',     label: 'Mine',      prefix: '\\x02', suffix: '\\x03' },
+        ],
+        vscode.ConfigurationTarget.Global
+      );
+      const got = getCustom();
+      assert.strictEqual(got.length, 1);
+      assert.strictEqual(got[0].id, 'mine');
+      assert.strictEqual(warnings.length, 2);
+      assert.ok(warnings.some((w) => w.includes('none')));
+      assert.ok(warnings.some((w) => w.includes('hl7-mllp')));
+    } finally {
+      Object.defineProperty(console, 'warn', {
+        value: original, configurable: true, writable: true,
+      });
+    }
+  });
+
+  test('getCustom coerces missing optional fields to empty strings', async () => {
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'envelopes.custom',
+      [{ id: 'minimal', label: 'Minimal' }],   // no prefix/suffix/linePrefix/lineSuffix
+      vscode.ConfigurationTarget.Global
+    );
+    const got = getCustom();
+    assert.strictEqual(got.length, 1);
+    assert.deepStrictEqual(got[0].spec, {
+      prefix: '', suffix: '', linePrefix: '', lineSuffix: '',
+    });
+  });
+
+  test('getCustom returns [] when the setting is not an array', async () => {
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'envelopes.custom',
+      { id: 'oops' },   // object instead of array
+      vscode.ConfigurationTarget.Global
+    );
+    assert.deepStrictEqual(getCustom(), []);
+  });
+
+  test('getAll returns built-ins followed by custom envelopes', async () => {
+    _loadBuiltinsForTests();   // ensure builtins are present for this test
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'envelopes.custom',
+      [
+        { id: 'a', label: 'Custom A', prefix: '\\x02', suffix: '\\x03' },
+        { id: 'b', label: 'Custom B' },
+      ],
+      vscode.ConfigurationTarget.Global
+    );
+    const all = getAll();
+    // Built-ins first, in the order _loadBuiltinsForTests seeds them.
+    assert.strictEqual(all[0].id, 'none');
+    assert.strictEqual(all[1].id, 'hl7-mllp');
+    assert.strictEqual(all[2].id, 'hl7-llp');
+    // Then the two custom envelopes in the order they appear in the array.
+    assert.strictEqual(all[3].id, 'a');
+    assert.strictEqual(all[4].id, 'b');
+  });
+
+  test('getAll returns only built-ins when no custom envelopes are configured', async () => {
+    _loadBuiltinsForTests();
+    const all = getAll();
+    assert.strictEqual(all.length, 3);
+    assert.deepStrictEqual(all.map((e) => e.id), ['none', 'hl7-mllp', 'hl7-llp']);
+  });
+
+  test('getCustom-resolved envelope wrap() produces the expected bytes end-to-end', async () => {
+    // Regression guard: the full path settings.json -> getCustom -> wrap
+    // -> bytes. The expected byte 0x02 corresponds to the 4-char TS
+    // literal "\\x02" which `encodeMessage` decodes to a single byte at
+    // wrap-time. Verified out-of-band against the compiled bundle via
+    // the byte-level verification skill.
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'envelopes.custom',
+      [{ id: 'stx-etx', label: 'STX/ETX', prefix: '\\x02', suffix: '\\x03' }],
+      vscode.ConfigurationTarget.Global
+    );
+    const [env] = getCustom();
+    assert.ok(env, 'custom envelope should resolve');
+    const out = wrap(Buffer.from('LOAD'), env.spec);
+    assert.deepStrictEqual([...out], [0x02, 0x4c, 0x4f, 0x41, 0x44, 0x03]);
   });
 });

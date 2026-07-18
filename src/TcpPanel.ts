@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { TcpClient, ConnectionState } from './TcpClient';
 import { encodeMessage, formatBytes, TextEncoding } from './MessageEncoder';
-import { listBuiltin, wrap } from './envelopes/Envelope';
+import { listBuiltin, getAll as getAllEnvelopes, wrap } from './envelopes/Envelope';
 import {
   getAll as getAllVariables,
   substitute,
@@ -380,9 +380,17 @@ export class TcpPanel {
     const nonce = getNonce();
     // Render the envelope options server-side so the dropdown is populated
     // immediately, even before any async message round-trip. The list
-    // contains only built-ins; user envelopes are no longer configurable
-    // via settings.json (the always-visible fields in the UI cover that).
-    const envelopeOptions = listBuiltin()
+    // includes built-ins first, then custom envelopes read from
+    // `tcpClient.envelopes.custom` in settings.json. Custom envelopes are
+    // configured via the Settings UI (which renders the array-of-object
+    // schema natively) — no in-panel add/delete dialog needed.
+    //
+    // External edits to `tcpClient.envelopes.custom` while the panel is
+    // open take effect on the next panel open, matching the existing
+    // `variables.custom` behaviour. Inline edits the user makes via the
+    // Settings UI will reflect immediately if they trigger a webview
+    // reload (the standard VS Code Settings UI does).
+    const envelopeOptions = getAllEnvelopes()
       .map((e) => `<option value="${escapeHtmlAttr(e.id)}">${escapeHtmlAttr(e.label)}</option>`)
       .join('');
     // The envelope fields in the UI prefill from the *currently selected*
@@ -1266,10 +1274,12 @@ export class TcpPanel {
       setUiState('disconnected');
       appendLog('err', '\u26a0', m.message);
     } else if (m.type === 'envelopes') {
-      // The dropdown is server-rendered with built-ins only; no client-side
-      // rebuild needed. (Previously this handler merged in custom envelopes
-      // from settings.json — those are gone in 0.2.1; users edit bytes
-      // directly via the always-visible fields.)
+      // Server-rendered dropdown already includes custom envelopes from
+      // tcpClient.envelopes.custom (see TcpPanel._getHtmlForWebview).
+      // No client-side rebuild needed. (Previously this handler merged in
+      // custom envelopes from settings.json; that round-trip was removed
+      // in 0.2.1 and remains off — settings edits take effect on the
+      // next panel open, matching the variables.custom behaviour.)
     } else if (m.type === 'variables') {
       varsState = { custom: m.custom || [] };
       renderVars();
@@ -1306,7 +1316,7 @@ export class TcpPanel {
 </script>
 </body>
 </html>`.replace('__PRESETS_PLACEHOLDER__', JSON.stringify(
-      Object.fromEntries(listBuiltin().map((e) => [e.id, e.spec]))
+      Object.fromEntries(getAllEnvelopes().map((e) => [e.id, e.spec]))
     ));
   }
 }
