@@ -94,7 +94,8 @@
     "compile": "tsc -p ./ && tsc -p ./tsconfig.webview.json",
     "watch": "tsc -watch -p ./",
     "lint:webview": "node scripts/check-webview-js.js",
-    "pretest": "npm run compile && npm run lint:webview",
+    "stubdom:webview": "node scripts/stubdom-webview.js",
+    "pretest": "npm run compile && npm run lint:webview && npm run stubdom:webview",
     "test": "node ./out/test/runTest.js",
     "package": "vsce package --no-dependencies --allow-missing-repository"
   },
