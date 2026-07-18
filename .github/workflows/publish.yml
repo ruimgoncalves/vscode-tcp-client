@@ -49,7 +49,9 @@ jobs:
 
       - name: Update package.json version
         run: |
-          npm version ${{ steps.tag.outputs.version }} --no-git-tag-version --allow-same-version
+          PUBLISH_VERSION=$(echo "${{ steps.tag.outputs.version }}" | sed -E 's/-.*$//')
+          echo "Setting package.json version to $PUBLISH_VERSION (tag was ${{ steps.tag.outputs.version }})"
+          npm version "$PUBLISH_VERSION" --no-git-tag-version --allow-same-version
 
       - name: Publish to VS Code Marketplace
         run: |
