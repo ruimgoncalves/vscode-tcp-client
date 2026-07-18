@@ -49,36 +49,31 @@
             "properties": {
               "id": {
                 "type": "string",
-                "description": "Unique identifier for this envelope. Used internally as the lookup key. Must be unique across all custom envelopes and must not collide with the built-in envelope ids (`none`, `hl7-mllp`, `hl7-llp`)."
+                "description": "Unique identifier. Must not collide with built-in ids (none, hl7-mllp, hl7-llp) or other custom ids."
               },
               "label": {
                 "type": "string",
-                "description": "Human-readable name shown in the envelope dropdown."
+                "description": "Human-readable name shown in the dropdown."
               },
               "prefix": {
                 "type": "string",
-                "default": "",
-                "description": "Bytes prepended to the payload (escape-sequence string: `\\xHH`, `\\n`, `\\r`, `\\t`, `\\\\`, `\\0`). Empty by default."
+                "description": "Bytes prepended to payload (escape sequences: \\xHH, \\n, \\r, \\t, \\\\, \\0)."
               },
               "suffix": {
                 "type": "string",
-                "default": "",
-                "description": "Bytes appended to the payload (escape-sequence string). Empty by default."
+                "description": "Bytes appended to payload (escape sequences: \\xHH, \\n, \\r, \\t, \\\\, \\0)."
               },
               "linePrefix": {
                 "type": "string",
-                "default": "",
-                "description": "Bytes prepended to every `\\n`-separated line of the payload (escape-sequence string). When both `linePrefix` and `lineSuffix` are empty, the payload is wrapped once with the outer prefix/suffix — the default."
+                "description": "Bytes prepended to every newline-separated line (escape sequences)."
               },
               "lineSuffix": {
                 "type": "string",
-                "default": "",
-                "description": "Bytes appended to every `\\n`-separated line of the payload (escape-sequence string). Use this for per-line terminators like `\\r` (HL7) or `\\n`."
+                "description": "Bytes appended to every newline-separated line (escape sequences)."
               }
-            },
-            "additionalProperties": false
+            }
           },
-          "markdownDescription": "User-defined envelopes. Each entry defines a framing preset (prefix + suffix + optional per-line prefix/suffix) that appears alongside the built-ins in the panel dropdown. Built-ins are not removable from here — they live in code. Use the **TCP Client** section of the Settings UI to add, edit, or remove entries; changes are saved to `settings.json` automatically."
+          "markdownDescription": "User-defined envelopes. Each entry defines a framing preset that appears in the panel dropdown alongside the built-ins. The **TCP Client** section of the Settings UI renders this as an editable table; add, edit, or remove entries directly there — changes are saved to settings.json automatically."
         }
       }
     }
