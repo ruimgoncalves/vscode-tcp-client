@@ -999,16 +999,24 @@ export class TcpPanel {
     var t  = document.createElement('span'); t.className = 'ts'; t.textContent = ts();
     var ic = document.createElement('span'); ic.className = 'ic'; ic.textContent = icon;
     var tx = document.createElement('span'); tx.className = 'tx';
-    // Render embedded '\n' as actual line breaks so multi-line protocol
-    // responses (HL7 segments, NRPE output, etc.) read naturally instead
-    // of as a single munged line. XSS-safe: each run uses textContent /
-    // createTextNode (no innerHTML) and only literal '\n' triggers a <br>.
-    // NOTE: formatBytes() returns the two-character sequence '\\' + 'n'
-    // for byte 0x0A (and '\\r' for 0x0D, '\\t' for 0x09), so we split on
-    // the literal two characters '\\' + 'n', not on an actual newline.
-    // Splitting on the rendered escape — not the underlying byte — is
-    // what makes line breaks visible in the log.
-    var parts = text.split('\\n');
+    /*
+     * Render embedded line breaks (the two-character escape backslash-n)
+     * in multi-line protocol output (HL7 segments, NRPE, etc.) as actual
+     * line breaks. XSS-safe via textContent / createTextNode (no innerHTML).
+     *
+     * Why block comment not line comment: a JS line comment ends at the
+     * next source newline, and this block intentionally discusses literal
+     * escape sequences that look like JS string literals. Writing it as
+     * line comments would truncate the embedded JS at every newline and
+     * break the IIFE before any listener could attach.
+     *
+     * Split target: the literal two-character string backslash + n, which
+     * is what formatBytes emits for byte 0x0A. In this TS template literal
+     * the source needs four backslash-n chars (a) so the rendered webview
+     * JS sees two chars (b) which the webview parser interprets as the
+     * literal escape sequence, not as the underlying byte.
+     */
+    var parts = text.split('\\\\n');
     for (var pi = 0; pi < parts.length; pi++) {
       if (pi > 0) { tx.appendChild(document.createElement('br')); }
       tx.appendChild(document.createTextNode(parts[pi]));
