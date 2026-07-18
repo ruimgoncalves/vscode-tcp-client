@@ -577,7 +577,7 @@ ${envelopePanelFragment({ envelopeOptions })}
 </div>
 
 <script nonce="${nonce}">window.__TCP_BOOTSTRAP__ = { presets: ${PRESETS_JSON} };</script>
-<script nonce="${nonce}" src="${mainScriptUri}"></script>
+<script type="module" nonce="${nonce}" src="${mainScriptUri}"></script>
 </body>
 </html>`;
   }
