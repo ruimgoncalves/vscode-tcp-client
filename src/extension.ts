@@ -7,7 +7,6 @@ import './envelopes/builtins';
 // the variable registry at activation time.
 import './variables/builtins';
 import { maybePrefillHL7Envelopes, prefillHL7EnvelopesCommand } from './envelopes/prefill';
-import { listBuiltin } from './envelopes/Envelope';
 
 export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
@@ -35,47 +34,6 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     })
   );
-  // One-shot cleanup for users who installed the v0.2.7-pre.1 build,
-  // where the prefill wrote shadowed entries (id = built-in id like
-  // 'hl7-mllp') that the panel Save/Delete UI can't see or manage.
-  // Without this command, those users see the "Delete always disabled"
-  // bug because the dropdown only contains built-ins — the shadowed
-  // entries are silently filtered. Running this removes them.
-  context.subscriptions.push(
-    vscode.commands.registerCommand('tcpClient.removeBuiltinShadows', async () => {
-      const removed = await removeBuiltinShadowsCommand();
-      if (removed === 0) {
-        vscode.window.showInformationMessage(
-          'No shadowed built-in envelopes found in your settings. Nothing to clean up.'
-        );
-      } else {
-        vscode.window.showInformationMessage(
-          `Removed ${removed} shadowed built-in envelope(s) from settings.json. The dropdown now reflects your actual presets.`
-        );
-      }
-    })
-  );
-}
-
-/**
- * Removes any custom envelope whose id collides with a built-in.
- * Mirrors the runtime read-path filter in `Envelope.getCustom()` so
- * the panel and settings.json agree on what's "visible."
- */
-async function removeBuiltinShadowsCommand(): Promise<number> {
-  const config = vscode.workspace.getConfiguration('tcpClient');
-  const raw = config.get<unknown>('envelopes.custom', []);
-  if (!Array.isArray(raw)) { return 0; }
-  const builtinIdSet = new Set(listBuiltin().map((b) => b.id));
-  const filtered = raw.filter((e): boolean => {
-    return !!e && typeof e === 'object' && typeof (e as { id?: unknown }).id === 'string'
-      && !builtinIdSet.has((e as { id: string }).id);
-  });
-  const removed = raw.length - filtered.length;
-  if (removed > 0) {
-    await config.update('envelopes.custom', filtered, vscode.ConfigurationTarget.Global);
-  }
-  return removed;
 }
 
 export function deactivate(): void {
