@@ -1,15 +1,16 @@
 {
   "version": "2.0.0",
+  "_about": "Tasks here are referenced by NAME from .vscode/launch.json's preLaunchTask. Naming the build task 'npm: compile' (with the type prefix) makes VS Code's task resolver unambiguous and prevents the C# extension's auto-detected 'dotnet build' from being picked as the default. See https://code.visualstudio.com/docs/debugtest/tasks for the task.json schema.",
   "tasks": [
     {
-      "label": "build",
+      "label": "npm: compile",
       "type": "npm",
       "script": "compile",
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": ["$tsc"]
     },
     {
-      "label": "watch",
+      "label": "npm: watch",
       "type": "npm",
       "script": "watch",
       "group": { "kind": "build" },
