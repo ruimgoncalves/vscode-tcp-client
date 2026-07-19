@@ -12,7 +12,6 @@ import {
 import { _clearAllForTests, _loadBuiltinsForTests } from '../../envelopes/Envelope';
 import {
   maybePrefillHL7Envelopes,
-  prefillHL7EnvelopesCommand,
   HL7_PRESETS,
   HL7_PREFILL_FLAG_KEY,
 } from '../../envelopes/prefill';
@@ -274,69 +273,6 @@ suite('Prefill – maybePrefillHL7Envelopes', () => {
     const stored = readCustomEnvelopes();
     assert.strictEqual(stored.length, 2);
     assert.strictEqual(stored.find((e) => e.id === 'hl7-mllp-copy')!.label, 'My custom HL7');
-  });
-});
-
-suite('Prefill – prefillHL7EnvelopesCommand', () => {
-  teardown(async () => {
-    await vscode.workspace.getConfiguration('tcpClient').update(
-      'envelopes.custom', [], vscode.ConfigurationTarget.Global
-    );
-  });
-
-  test('appends HL7 presets when none present', async () => {
-    await vscode.workspace.getConfiguration('tcpClient').update(
-      'envelopes.custom', [], vscode.ConfigurationTarget.Global
-    );
-    const result = await prefillHL7EnvelopesCommand();
-    assert.strictEqual(result.replaced, 0);
-    assert.strictEqual(result.total, 2);
-    const stored = readCustomEnvelopes();
-    assert.strictEqual(stored.length, 2);
-  });
-
-  test('replaces existing HL7 entries with the canonical preset definitions', async () => {
-    await vscode.workspace.getConfiguration('tcpClient').update(
-      'envelopes.custom',
-      [
-        { id: 'hl7-mllp-copy', label: 'My tweaked HL7', prefix: '', suffix: '\\x1C', lineSuffix: '\\n' },
-        { id: 'mine', label: 'My custom', prefix: '\\x02', suffix: '\\x03' },
-      ],
-      vscode.ConfigurationTarget.Global
-    );
-    const result = await prefillHL7EnvelopesCommand();
-    assert.strictEqual(result.replaced, 1);
-    assert.strictEqual(result.total, 3);   // mine + hl7-mllp-copy + hl7-llp-copy
-    const stored = readCustomEnvelopes();
-    // The hl7-mllp-copy entry now matches the canonical preset:
-    assert.strictEqual(stored.find((e) => e.id === 'hl7-mllp-copy')!.label, 'HL7 v2 (MLLP framing) — editable copy');
-    assert.strictEqual(stored.find((e) => e.id === 'hl7-mllp-copy')!.prefix, '\\x0B');
-    // The user's non-HL7 entry is preserved untouched:
-    const mine = stored.find((e) => e.id === 'mine');
-    assert.ok(mine);
-    assert.strictEqual(mine!.label, 'My custom');
-    assert.strictEqual(mine!.prefix, '\\x02');
-  });
-
-  test('does not affect the globalState flag', async () => {
-    await vscode.workspace.getConfiguration('tcpClient').update(
-      'envelopes.custom', [], vscode.ConfigurationTarget.Global
-    );
-    const ctx = makeFakeContext();
-    await prefillHL7EnvelopesCommand();
-    // Manual command is independent of the auto-prefill flag.
-    assert.strictEqual(ctx.globalState.get(HL7_PREFILL_FLAG_KEY), undefined);
-    // ... and a subsequent auto-prefill still runs:
-    const auto = await maybePrefillHL7Envelopes(ctx);
-    assert.strictEqual(auto.ran, true);
-    assert.strictEqual(auto.added, 0);   // HL7 already there from manual call
-  });
-
-  test('HL7_PRESETS exports exactly the two built-ins', () => {
-    assert.deepStrictEqual(
-      HL7_PRESETS.map((p) => p.id).sort(),
-      ['hl7-llp-copy', 'hl7-mllp-copy']
-    );
   });
 });
 

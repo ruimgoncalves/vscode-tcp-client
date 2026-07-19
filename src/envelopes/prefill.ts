@@ -81,10 +81,6 @@ async function writeCustomEnvelopes(list: EnvelopeDef[]): Promise<void> {
  * without touching settings. The flag is local to the extension's
  * globalState, so it persists across activations but resets if the
  * user clears the extension's storage.
- *
- * Manual re-trigger: use `prefillHL7EnvelopesCommand()`, which
- * bypasses the flag and replaces existing HL7 entries with the
- * current preset list.
  */
 export async function maybePrefillHL7Envelopes(
   context: vscode.ExtensionContext
@@ -97,7 +93,8 @@ export async function maybePrefillHL7Envelopes(
   const existingIds = new Set(existing.map((e) => e.id));
 
   // Append only the HL7 presets that aren't already present. If the
-  // user already added hl7-mllp / hl7-llp themselves, we don't duplicate.
+  // user already added hl7-mllp-copy / hl7-llp-copy themselves, we
+  // don't duplicate.
   const toAdd = HL7_PRESETS.filter((p) => !existingIds.has(p.id));
   if (toAdd.length > 0) {
     await writeCustomEnvelopes([...existing, ...toAdd]);
@@ -105,24 +102,4 @@ export async function maybePrefillHL7Envelopes(
 
   await context.globalState.update(HL7_PREFILL_FLAG_KEY, true);
   return { ran: true, added: toAdd.length };
-}
-
-/**
- * Manual re-trigger for the `TCP Client: Prefill HL7 Envelopes` command.
- * Replaces any existing HL7 entries with the same id (so the user gets
- * the latest preset definitions), and leaves other custom envelopes
- * untouched. Returns the number of HL7 entries now in the array.
- *
- * Does NOT touch the globalState flag — running the command does not
- * mark the auto-prefill as "already done." That separation matters: the
- * user might delete the HL7 presets later and want the auto-prefill
- * still available on a fresh install / globalState reset.
- */
-export async function prefillHL7EnvelopesCommand(): Promise<{ replaced: number; total: number }> {
-  const existing = readCustomEnvelopes();
-  const hl7Ids = new Set(HL7_PRESETS.map((p) => p.id));
-  const without = existing.filter((e) => !hl7Ids.has(e.id));
-  const merged = [...without, ...HL7_PRESETS];
-  await writeCustomEnvelopes(merged);
-  return { replaced: existing.filter((e) => hl7Ids.has(e.id)).length, total: merged.length };
 }

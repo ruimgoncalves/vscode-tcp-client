@@ -26,10 +26,6 @@
         "command": "tcpClient.openPanel",
         "title": "TCP Client: Open Panel",
         "icon": "$(plug)"
-      },
-      {
-        "command": "tcpClient.prefillHL7Envelopes",
-        "title": "TCP Client: Prefill HL7 Envelopes"
       }
     ],
     "configuration": {
