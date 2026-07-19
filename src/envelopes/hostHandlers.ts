@@ -254,7 +254,11 @@ export function registerEnvelopeHostHandlers(
             if (result.envelope) {
               panel.webview.postMessage({
                 type: 'envelopes',
-                list: buildEnvelopeListForWebview(),
+                // Quiet variant — getAll() (via buildEnvelopeListForWebview)
+                // emits console.warn per built-in-id collision, which
+                // shows up in the user's Extension Host Output channel
+                // and gets mistaken for a webview error.
+                list: buildEnvelopeListForWebviewQuiet(),
                 selectedId: result.envelope.id,
               });
             } else {
@@ -268,7 +272,7 @@ export function registerEnvelopeHostHandlers(
             if (result.deleted) {
               panel.webview.postMessage({
                 type: 'envelopes',
-                list: buildEnvelopeListForWebview(),
+                list: buildEnvelopeListForWebviewQuiet(),
                 selectedId: 'none',
               });
             } else {
@@ -280,7 +284,7 @@ export function registerEnvelopeHostHandlers(
           case 'getEnvelopes': {
             panel.webview.postMessage({
               type: 'envelopes',
-              list: buildEnvelopeListForWebview(),
+              list: buildEnvelopeListForWebviewQuiet(),
               selectedId: typeof msg.selectedId === 'string' ? msg.selectedId : 'none',
             });
             return;
