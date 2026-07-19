@@ -14,19 +14,27 @@ export const HL7_PREFILL_FLAG_KEY = 'tcpClient.prefilledHL7.v1';
  * The shape matches the live HL7 built-ins exactly: VT prefix, FS suffix,
  * `\r` line suffix for both. If the actual built-ins change, this list
  * should be updated to match.
+ *
+ * IDs use a `-copy` suffix (e.g. `hl7-mllp-copy`) so the prefill entries
+ * do NOT shadow the built-in ids. Earlier versions of this prefill wrote
+ * entries with the same id as built-ins (`hl7-mllp`, `hl7-llp`), which
+ * caused the runtime to silently skip them in the dropdown — making them
+ * invisible AND undeletable via the panel's Save/Delete UI. The renamed
+ * form keeps the "editable copy" UX intent but lets the panel manage
+ * the entries normally.
  */
 export const HL7_PRESETS: ReadonlyArray<EnvelopeDef> = [
   {
-    id: 'hl7-mllp',
-    label: 'HL7 v2 (MLLP framing)',
+    id: 'hl7-mllp-copy',
+    label: 'HL7 v2 (MLLP framing) — editable copy',
     prefix: '\\x0B',
     suffix: '\\x1C',
     linePrefix: '',
     lineSuffix: '\\r',
   },
   {
-    id: 'hl7-llp',
-    label: 'HL7 v2 (raw LLP, no VT)',
+    id: 'hl7-llp-copy',
+    label: 'HL7 v2 (raw LLP, no VT) — editable copy',
     prefix: '',
     suffix: '\\x1C',
     linePrefix: '',

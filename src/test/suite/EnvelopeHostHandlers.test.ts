@@ -240,7 +240,7 @@ suite('Prefill – maybePrefillHL7Envelopes', () => {
     const stored = readCustomEnvelopes();
     assert.deepStrictEqual(
       stored.map((e) => e.id).sort(),
-      ['hl7-llp', 'hl7-mllp']
+      ['hl7-llp-copy', 'hl7-mllp-copy']
     );
     // Flag set:
     assert.strictEqual(ctx.globalState.get(HL7_PREFILL_FLAG_KEY), true);
@@ -263,17 +263,17 @@ suite('Prefill – maybePrefillHL7Envelopes', () => {
   test('does not duplicate presets the user already added by hand', async () => {
     await vscode.workspace.getConfiguration('tcpClient').update(
       'envelopes.custom',
-      [{ id: 'hl7-mllp', label: 'My custom HL7', prefix: '\\x0B', suffix: '\\x1C', lineSuffix: '\\r' }],
+      [{ id: 'hl7-mllp-copy', label: 'My custom HL7', prefix: '\\x0B', suffix: '\\x1C', lineSuffix: '\\r' }],
       vscode.ConfigurationTarget.Global
     );
     const ctx = makeFakeContext();
     const result = await maybePrefillHL7Envelopes(ctx);
     assert.strictEqual(result.ran, true);
-    // hl7-mllp was already there, hl7-llp is new:
+    // hl7-mllp-copy was already there, hl7-llp-copy is new:
     assert.strictEqual(result.added, 1);
     const stored = readCustomEnvelopes();
     assert.strictEqual(stored.length, 2);
-    assert.strictEqual(stored.find((e) => e.id === 'hl7-mllp')!.label, 'My custom HL7');
+    assert.strictEqual(stored.find((e) => e.id === 'hl7-mllp-copy')!.label, 'My custom HL7');
   });
 });
 
@@ -299,18 +299,18 @@ suite('Prefill – prefillHL7EnvelopesCommand', () => {
     await vscode.workspace.getConfiguration('tcpClient').update(
       'envelopes.custom',
       [
-        { id: 'hl7-mllp', label: 'My tweaked HL7', prefix: '', suffix: '\\x1C', lineSuffix: '\\n' },
+        { id: 'hl7-mllp-copy', label: 'My tweaked HL7', prefix: '', suffix: '\\x1C', lineSuffix: '\\n' },
         { id: 'mine', label: 'My custom', prefix: '\\x02', suffix: '\\x03' },
       ],
       vscode.ConfigurationTarget.Global
     );
     const result = await prefillHL7EnvelopesCommand();
     assert.strictEqual(result.replaced, 1);
-    assert.strictEqual(result.total, 3);   // mine + hl7-mllp + hl7-llp
+    assert.strictEqual(result.total, 3);   // mine + hl7-mllp-copy + hl7-llp-copy
     const stored = readCustomEnvelopes();
-    // The hl7-mllp entry now matches the canonical preset:
-    assert.strictEqual(stored.find((e) => e.id === 'hl7-mllp')!.label, 'HL7 v2 (MLLP framing)');
-    assert.strictEqual(stored.find((e) => e.id === 'hl7-mllp')!.prefix, '\\x0B');
+    // The hl7-mllp-copy entry now matches the canonical preset:
+    assert.strictEqual(stored.find((e) => e.id === 'hl7-mllp-copy')!.label, 'HL7 v2 (MLLP framing) — editable copy');
+    assert.strictEqual(stored.find((e) => e.id === 'hl7-mllp-copy')!.prefix, '\\x0B');
     // The user's non-HL7 entry is preserved untouched:
     const mine = stored.find((e) => e.id === 'mine');
     assert.ok(mine);
@@ -335,7 +335,7 @@ suite('Prefill – prefillHL7EnvelopesCommand', () => {
   test('HL7_PRESETS exports exactly the two built-ins', () => {
     assert.deepStrictEqual(
       HL7_PRESETS.map((p) => p.id).sort(),
-      ['hl7-llp', 'hl7-mllp']
+      ['hl7-llp-copy', 'hl7-mllp-copy']
     );
   });
 });
