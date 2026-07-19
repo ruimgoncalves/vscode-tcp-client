@@ -720,6 +720,16 @@ declare global {
   }
   dbg('element bail check passed — wiring listeners');
 
+  // Save dialog: inline <dialog> shown when the user clicks "+ Save preset".
+  // We use the standard <form method="dialog"> pattern: when the form's
+  // submit button is clicked, the dialog closes with `returnValue` set to
+  // the button's `value=` attribute. The 'close' event handler reads
+  // returnValue to distinguish Save vs Cancel.
+  const saveDialog  = document.getElementById('savePresetDialog') as HTMLDialogElement | null;
+  const saveForm    = document.getElementById('savePresetForm') as HTMLFormElement | null;
+  const saveLabel   = document.getElementById('savePresetLabel') as HTMLInputElement | null;
+  const saveCancel  = document.getElementById('savePresetCancel') as HTMLButtonElement | null;
+
   function isCustomSelected(): boolean {
     return BUILTIN_IDS.indexOf(envelopeSelect!.value) === -1;
   }
@@ -733,27 +743,46 @@ declare global {
 
   saveBtn.addEventListener('click', () => {
     dbg('Save button clicked');
-    // Simplified flow: ask for the label via a native prompt, then
-    // post saveEnvelope immediately. Bypasses the dialog form-submit
-    // path which has been flaky in the webview (method=dialog form
-    // doesn't always populate returnValue as expected on close).
-    // TODO: restore the proper dialog UX once we have a confirmed
-    // working pattern.
-    let label: string | null;
-    try {
-      label = window.prompt('Save preset — enter a name:', '');
-    } catch (e) {
-      dbg('window.prompt THREW', String(e));
-      vscode.postMessage({ type: 'saveEnvelopeError', reason: 'window.prompt is unavailable in this webview context. Use the manual "TCP Client: Prefill HL7 Envelopes" command or save envelopes via settings.json.' });
+    if (!saveDialog || !saveLabel || !saveForm) {
+      dbg('Save dialog elements missing — bailing');
       return;
     }
-    dbg('window.prompt returned', { label });
-    if (label === null) { return; }   // user pressed Cancel
-    const trimmed = label.trim();
-    if (!trimmed) { dbg('label was empty after trim — bailing'); return; }
+    // Reset the form so a stale label from a previous save doesn't
+    // get submitted on a new save click.
+    saveLabel.value = '';
+    if (typeof saveDialog.showModal === 'function') {
+      dbg('opening save dialog via showModal()');
+      saveDialog.showModal();
+      saveLabel.focus();
+    } else {
+      dbg('showModal not available — webview lacks <dialog> support, posting message with empty label');
+      // Fallback for webviews that block <dialog>: post a placeholder label.
+      // The user can rename it via settings.json.
+      postSaveEnvelope('unnamed-preset');
+    }
+  });
+
+  // Cancel button: close dialog without saving.
+  saveCancel?.addEventListener('click', () => {
+    dbg('Save dialog cancel clicked');
+    saveDialog?.close('cancel');
+  });
+
+  // 'close' event: dialog returned. If returnValue is 'cancel', the
+  // user clicked Cancel. Otherwise it's 'default' (the submit button's
+  // value) — read the label and post.
+  saveDialog?.addEventListener('close', () => {
+    dbg('Save dialog closed', { returnValue: saveDialog.returnValue });
+    if (saveDialog.returnValue === 'cancel') { return; }
+    const label = (saveLabel?.value ?? '').trim();
+    if (!label) { dbg('label empty after dialog close — bailing'); return; }
+    postSaveEnvelope(label);
+  });
+
+  function postSaveEnvelope(label: string): void {
     const msg = {
       type: 'saveEnvelope',
-      label: trimmed,
+      label,
       prefix:     prefixField     ? prefixField.value     : '',
       suffix:     suffixField     ? suffixField.value     : '',
       linePrefix: linePrefixField ? linePrefixField.value : '',
@@ -762,7 +791,7 @@ declare global {
     dbg('posting saveEnvelope', msg);
     vscode.postMessage(msg);
     dbg('saveEnvelope posted');
-  });
+  }
 
   deleteBtn.addEventListener('click', () => {
     dbg('Delete button clicked', {

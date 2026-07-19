@@ -37,10 +37,6 @@ export function envelopePanelFragment(opts: { envelopeOptions: string }): string
   <button id="envelope-delete-btn" class="env-action env-action-danger" type="button" title="Delete the currently selected custom preset" disabled>Delete</button>
 </div>
 
-<!-- The Save flow now uses window.prompt() instead of an inline
-     dialog (the dialog form-submit pattern was unreliable in the
-     webview). The dialog markup is kept commented-out for reference
-     and a future restore once the inline-dialog UX is solid.
 <dialog id="savePresetDialog" class="preset-dialog">
   <form method="dialog" id="savePresetForm">
     <h3>Save preset</h3>
@@ -53,7 +49,6 @@ export function envelopePanelFragment(opts: { envelopeOptions: string }): string
     </div>
   </form>
 </dialog>
--->
 
 <dialog id="deletePresetDialog" class="preset-dialog">
   <form method="dialog" id="deletePresetForm">

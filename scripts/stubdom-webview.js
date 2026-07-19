@@ -43,12 +43,10 @@ const REQUIRED_ELEMENT_IDS = [
   'varsBody', 'newVarName', 'newVarValue', 'addVarBtn',
   'helpBtn', 'helpBackdrop', 'helpCloseBtn', 'livePreviewToggle',
   'escapeTable', 'varsTable',
-  // Save / Delete envelope buttons (the 2026-07-18 PR feature).
+  // Save / Delete envelope buttons + dialogs (the 2026-07-18 PR feature).
   // If any of these is missing, the Save/Delete UI is dead.
   'envelope-save-btn', 'envelope-delete-btn',
-  // Delete dialog (the Save flow now uses window.prompt() instead of
-  // an inline dialog, so savePresetDialog / savePresetLabel /
-  // savePresetCancel / savePresetConfirm are no longer required).
+  'savePresetDialog', 'savePresetLabel', 'savePresetForm', 'savePresetCancel',
   'deletePresetDialog', 'deletePresetMessage', 'deletePresetForm', 'deletePresetCancel',
 ];
 
@@ -62,10 +60,7 @@ const CRITICAL_LISTENERS = [
   ['helpBtn',        'click',     'Help modal button'],
   ['envelope-save-btn',   'click',     'Save preset button'],
   ['envelope-delete-btn', 'click',     'Delete preset button'],
-  // Delete dialog still uses the inline-dialog form-submit pattern
-  // (it has worked in the user's testing). The Save flow was switched
-  // to window.prompt() to bypass the form-submit flakiness, so the
-  // savePresetDialog close handler is no longer required.
+  ['savePresetDialog',    'close',     'Save dialog close handler'],
   ['deletePresetDialog',  'close',     'Delete dialog close handler'],
 ];
 
