@@ -191,6 +191,13 @@ export function buildEnvelopeListForWebviewQuiet() {
     .map((e) => ({
       id: e.id,
       label: e.label,
+      // Ship the full spec (prefix/suffix/etc.) so the webview's
+      // envelope <select> change handler can populate the input
+      // fields when the user picks a custom preset. Without this,
+      // selecting a custom preset silently resets the fields to the
+      // 'none' built-in defaults (the bootstrap only ships built-in
+      // specs, and applyPreset() falls back to PRESETS['none'] for
+      // any id it doesn't recognize).
       spec: {
         prefix: typeof e.prefix === 'string' ? e.prefix : '',
         suffix: typeof e.suffix === 'string' ? e.suffix : '',
@@ -198,7 +205,17 @@ export function buildEnvelopeListForWebviewQuiet() {
         lineSuffix: typeof e.lineSuffix === 'string' ? e.lineSuffix : '',
       },
     }));
-  return [...listBuiltin(), ...custom].map((e) => ({ id: e.id, label: e.label }));
+  const builtins = listBuiltin().map((b) => ({
+    id: b.id,
+    label: b.label,
+    spec: {
+      prefix: typeof b.spec.prefix === 'string' ? b.spec.prefix : '',
+      suffix: typeof b.spec.suffix === 'string' ? b.spec.suffix : '',
+      linePrefix: typeof b.spec.linePrefix === 'string' ? b.spec.linePrefix : '',
+      lineSuffix: typeof b.spec.lineSuffix === 'string' ? b.spec.lineSuffix : '',
+    },
+  }));
+  return [...builtins, ...custom];
 }
 
 /** Raw reader (no type narrowing, no warn side-effects). */

@@ -92,6 +92,45 @@ declare global {
   const bootstrap: TcpBootstrap = window.__TCP_BOOTSTRAP__ ?? { presets: {} };
   const PRESETS: TcpBootstrap['presets'] = bootstrap.presets ?? {};
 
+  /**
+   * Live envelope specs the host sends in the `envelopes` message.
+   * Updated every time the dropdown rebuilds (panel open, save,
+   * delete, settings.json edit). Built-in specs are also seeded
+   * from the bootstrap map, so applyPreset() can resolve any preset
+   * by id without falling back to the bootstrap.
+   *
+   * Without this map, selecting a custom preset from the dropdown
+   * silently resets the input fields to PRESETS['none'] (empty
+   * strings) — because the bootstrap only ships built-in specs and
+   * applyPreset() falls back to PRESETS['none'] for any id it
+   * doesn't recognize.
+   */
+  const RUNTIME_PRESETS: Record<string, { prefix: string; suffix: string; linePrefix: string; lineSuffix: string }> = {};
+
+  function seedPresetMap(): void {
+    for (const [id, spec] of Object.entries(PRESETS)) {
+      RUNTIME_PRESETS[id] = {
+        prefix: typeof spec.prefix === 'string' ? spec.prefix : '',
+        suffix: typeof spec.suffix === 'string' ? spec.suffix : '',
+        linePrefix: typeof spec.linePrefix === 'string' ? spec.linePrefix : '',
+        lineSuffix: typeof spec.lineSuffix === 'string' ? spec.lineSuffix : '',
+      };
+    }
+  }
+  seedPresetMap();
+
+  function ingestEnvelopeList(list: ReadonlyArray<{ id: string; label?: string; spec?: { prefix?: unknown; suffix?: unknown; linePrefix?: unknown; lineSuffix?: unknown } }>): void {
+    for (const e of list) {
+      if (!e || typeof e.id !== 'string') { continue; }
+      RUNTIME_PRESETS[e.id] = {
+        prefix: typeof e.spec?.prefix === 'string' ? e.spec.prefix : '',
+        suffix: typeof e.spec?.suffix === 'string' ? e.spec.suffix : '',
+        linePrefix: typeof e.spec?.linePrefix === 'string' ? e.spec.linePrefix : '',
+        lineSuffix: typeof e.spec?.lineSuffix === 'string' ? e.spec.lineSuffix : '',
+      };
+    }
+  }
+
   const serverEl = document.getElementById('server') as HTMLInputElement;
   const connectEl = document.getElementById('connectBtn') as HTMLButtonElement;
   const dotEl = document.getElementById('dot') as HTMLElement;
@@ -170,6 +209,11 @@ declare global {
   // ---------------------------------------------------------------------
 
   function presetFor(id: string): TcpBootstrap['presets'][string] {
+    // Prefer the runtime map (built-in specs seeded from bootstrap,
+    // custom specs ingested from each envelopes reply). Fall back to
+    // PRESETS['none'] only as a last resort.
+    const runtime = RUNTIME_PRESETS[id];
+    if (runtime) { return runtime; }
     return PRESETS[id] ?? PRESETS['none'] ?? { prefix: '', suffix: '', linePrefix: '', lineSuffix: '' };
   }
 
@@ -595,6 +639,11 @@ declare global {
           opt.textContent = e.label;   // textContent escapes, no HTML interpretation
           envEl.appendChild(opt);
         });
+        // Cache the spec for each envelope so applyPreset() can load
+        // the field values when the user picks a custom preset.
+        // Built-in specs come from the bootstrap; custom ones are
+        // shipped alongside the list by the host.
+        ingestEnvelopeList(m.list);
       }
       if (m.selectedId && envEl) {
         envEl.value = m.selectedId;
