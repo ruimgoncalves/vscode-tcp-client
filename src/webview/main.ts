@@ -641,10 +641,7 @@ declare global {
   const envelopeSelect = document.getElementById('envelope') as HTMLSelectElement | null;
   const saveBtn       = document.getElementById('envelope-save-btn') as HTMLButtonElement | null;
   const deleteBtn     = document.getElementById('envelope-delete-btn') as HTMLButtonElement | null;
-  const saveDialog    = document.getElementById('savePresetDialog') as HTMLDialogElement | null;
   const deleteDialog  = document.getElementById('deletePresetDialog') as HTMLDialogElement | null;
-  const saveLabel     = document.getElementById('savePresetLabel') as HTMLInputElement | null;
-  const saveCancel    = document.getElementById('savePresetCancel') as HTMLButtonElement | null;
   const deleteCancel  = document.getElementById('deletePresetCancel') as HTMLButtonElement | null;
   const deleteMessage = document.getElementById('deletePresetMessage') as HTMLElement | null;
   const prefixField       = document.getElementById('envelope-prefix') as HTMLInputElement | null;
@@ -654,9 +651,11 @@ declare global {
 
   // If any element is missing (partial embed during refactor), bail
   // rather than letting the IIFE throw a null deref that takes down
-  // the whole panel script with it.
-  if (!envelopeSelect || !saveBtn || !deleteBtn || !saveDialog ||
-      !deleteDialog || !saveLabel || !saveCancel || !deleteCancel || !deleteMessage) {
+  // the whole panel script with it. (saveDialog / saveLabel /
+  // saveCancel / saveConfirm are no longer needed — the Save flow
+  // now uses window.prompt() instead of an inline dialog.)
+  if (!envelopeSelect || !saveBtn || !deleteBtn || !deleteDialog ||
+      !deleteCancel || !deleteMessage) {
     return;
   }
 
@@ -672,22 +671,19 @@ declare global {
   envelopeSelect.addEventListener('change', refreshDeleteButton);
 
   saveBtn.addEventListener('click', () => {
-    saveLabel!.value = '';
-    saveDialog!.showModal();
-    saveLabel!.focus();
-  });
-
-  saveCancel.addEventListener('click', () => {
-    saveDialog!.close('cancel');
-  });
-
-  saveDialog.addEventListener('close', () => {
-    if (saveDialog!.returnValue === 'cancel') { return; }
-    const label = saveLabel!.value.trim();
-    if (!label) { return; }
+    // Simplified flow: ask for the label via a native prompt, then
+    // post saveEnvelope immediately. Bypasses the dialog form-submit
+    // path which has been flaky in the webview (method=dialog form
+    // doesn't always populate returnValue as expected on close).
+    // TODO: restore the proper dialog UX once we have a confirmed
+    // working pattern.
+    const label = window.prompt('Save preset — enter a name:', '');
+    if (label === null) { return; }   // user pressed Cancel
+    const trimmed = label.trim();
+    if (!trimmed) { return; }
     vscode.postMessage({
       type: 'saveEnvelope',
-      label: label,
+      label: trimmed,
       prefix:     prefixField     ? prefixField.value     : '',
       suffix:     suffixField     ? suffixField.value     : '',
       linePrefix: linePrefixField ? linePrefixField.value : '',
