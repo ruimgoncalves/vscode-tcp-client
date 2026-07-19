@@ -552,6 +552,7 @@ declare global {
       setUiState('disconnected');
       appendLog('err', '\u26a0', m.message ?? '');
     } else if (m.type === 'envelopes') {
+      try { console.log('[TCP-DBG] envelopes message received', { count: (m.list||[]).length, selectedId: m.selectedId, ids: (m.list||[]).map((x:any)=>x.id) }); } catch {}
       // Rebuild the <select id="envelope"> client-side from the host's
       // authoritative list. Triggered by: panel open (via getEnvelopes
       // request), settings.json edit (via ConfigurationTarget listener),
@@ -581,6 +582,7 @@ declare global {
       if (envEl) {
         envEl.dispatchEvent(new Event('change'));
       }
+      try { console.log('[TCP-DBG] envelopes rebuilt', { optionsCount: envEl ? envEl.querySelectorAll('option').length : null, selectedValue: envEl?.value, disabled: (document.getElementById('envelope-delete-btn') as HTMLButtonElement | null)?.disabled }); } catch {}
     } else if (m.type === 'envelopeError') {
       appendLog('err', '\u26a0', 'Envelope: ' + (m.reason || 'unknown error'));
     } else if (m.type === 'variables') {
@@ -638,6 +640,18 @@ declare global {
   const vscode: WebviewApi = acquireVsCodeApi();
   const BUILTIN_IDS: string[] = ['none', 'hl7-mllp', 'hl7-llp'];
 
+  // DIAGNOSTIC: every step in the Save/Delete flow logs so you can see
+  // exactly where the click trail ends. Open the webview devtools (Help
+  // → Toggle Developer Tools) and filter the console on "[TCP-DBG]".
+  // Remove these after the bug is found.
+  function dbg(msg: string, extra?: unknown): void {
+    try {
+      if (extra === undefined) { console.log('[TCP-DBG]', msg); }
+      else { console.log('[TCP-DBG]', msg, extra); }
+    } catch (_e) { /* console unavailable — silently ignore */ }
+  }
+  dbg('panelButtons IIFE entered');
+
   const envelopeSelect = document.getElementById('envelope') as HTMLSelectElement | null;
   const saveBtn       = document.getElementById('envelope-save-btn') as HTMLButtonElement | null;
   const deleteBtn     = document.getElementById('envelope-delete-btn') as HTMLButtonElement | null;
@@ -649,6 +663,19 @@ declare global {
   const linePrefixField   = document.getElementById('envelope-linePrefix') as HTMLInputElement | null;
   const lineSuffixField   = document.getElementById('envelope-lineSuffix') as HTMLInputElement | null;
 
+  dbg('element lookup', {
+    envelopeSelect: !!envelopeSelect,
+    saveBtn: !!saveBtn,
+    deleteBtn: !!deleteBtn,
+    deleteDialog: !!deleteDialog,
+    deleteCancel: !!deleteCancel,
+    deleteMessage: !!deleteMessage,
+    prefixField: !!prefixField,
+    suffixField: !!suffixField,
+    linePrefixField: !!linePrefixField,
+    lineSuffixField: !!lineSuffixField,
+  });
+
   // If any element is missing (partial embed during refactor), bail
   // rather than letting the IIFE throw a null deref that takes down
   // the whole panel script with it. (saveDialog / saveLabel /
@@ -656,8 +683,17 @@ declare global {
   // now uses window.prompt() instead of an inline dialog.)
   if (!envelopeSelect || !saveBtn || !deleteBtn || !deleteDialog ||
       !deleteCancel || !deleteMessage) {
+    dbg('BAILED — required element missing', {
+      envelopeSelect: !!envelopeSelect,
+      saveBtn: !!saveBtn,
+      deleteBtn: !!deleteBtn,
+      deleteDialog: !!deleteDialog,
+      deleteCancel: !!deleteCancel,
+      deleteMessage: !!deleteMessage,
+    });
     return;
   }
+  dbg('element bail check passed — wiring listeners');
 
   function isCustomSelected(): boolean {
     return BUILTIN_IDS.indexOf(envelopeSelect!.value) === -1;
@@ -671,43 +707,65 @@ declare global {
   envelopeSelect.addEventListener('change', refreshDeleteButton);
 
   saveBtn.addEventListener('click', () => {
+    dbg('Save button clicked');
     // Simplified flow: ask for the label via a native prompt, then
     // post saveEnvelope immediately. Bypasses the dialog form-submit
     // path which has been flaky in the webview (method=dialog form
     // doesn't always populate returnValue as expected on close).
     // TODO: restore the proper dialog UX once we have a confirmed
     // working pattern.
-    const label = window.prompt('Save preset — enter a name:', '');
+    let label: string | null;
+    try {
+      label = window.prompt('Save preset — enter a name:', '');
+    } catch (e) {
+      dbg('window.prompt THREW', String(e));
+      vscode.postMessage({ type: 'saveEnvelopeError', reason: 'window.prompt is unavailable in this webview context. Use the manual "TCP Client: Prefill HL7 Envelopes" command or save envelopes via settings.json.' });
+      return;
+    }
+    dbg('window.prompt returned', { label });
     if (label === null) { return; }   // user pressed Cancel
     const trimmed = label.trim();
-    if (!trimmed) { return; }
-    vscode.postMessage({
+    if (!trimmed) { dbg('label was empty after trim — bailing'); return; }
+    const msg = {
       type: 'saveEnvelope',
       label: trimmed,
       prefix:     prefixField     ? prefixField.value     : '',
       suffix:     suffixField     ? suffixField.value     : '',
       linePrefix: linePrefixField ? linePrefixField.value : '',
       lineSuffix: lineSuffixField ? lineSuffixField.value : ''
-    });
+    };
+    dbg('posting saveEnvelope', msg);
+    vscode.postMessage(msg);
+    dbg('saveEnvelope posted');
   });
 
   deleteBtn.addEventListener('click', () => {
-    if (!isCustomSelected()) { return; }
+    dbg('Delete button clicked', {
+      isCustom: isCustomSelected(),
+      selectedValue: envelopeSelect!.value,
+      isDisabled: deleteBtn!.disabled,
+    });
+    if (!isCustomSelected()) {
+      dbg('Delete bailed — selected value is a built-in, not a custom preset');
+      return;
+    }
     const opt = envelopeSelect!.options[envelopeSelect!.selectedIndex];
     const label = opt ? opt.text : envelopeSelect!.value;
     deleteMessage!.textContent = 'Delete the preset "' + label + '"?';
+    dbg('opening delete dialog', { label });
     deleteDialog!.showModal();
   });
 
   deleteCancel.addEventListener('click', () => {
+    dbg('Delete dialog cancel clicked');
     deleteDialog!.close('cancel');
   });
 
   deleteDialog.addEventListener('close', () => {
+    dbg('Delete dialog closed', { returnValue: deleteDialog!.returnValue });
     if (deleteDialog!.returnValue === 'cancel') { return; }
-    vscode.postMessage({
-      type: 'deleteEnvelope',
-      id: envelopeSelect!.value
-    });
+    const msg = { type: 'deleteEnvelope', id: envelopeSelect!.value };
+    dbg('posting deleteEnvelope', msg);
+    vscode.postMessage(msg);
   });
 })();
