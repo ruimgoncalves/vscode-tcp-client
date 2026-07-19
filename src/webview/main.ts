@@ -30,6 +30,25 @@
 // The empty export is intentional and has zero runtime cost.
 export {};
 
+// IMPORTANT: VS Code's webview API allows `acquireVsCodeApi()` to be
+// called only ONCE per webview session. Subsequent calls throw
+// synchronously, taking the surrounding IIFE down before any
+// listeners get attached. This file has TWO IIFEs (the main panel
+// logic and the Save/Delete envelope UI), so we acquire the API
+// once at module scope and share the reference everywhere.
+// See https://code.visualstudio.com/api/extension-guides/webview —
+// "This function can only be invoked once per session." A previous
+// version called it from both IIFEs and the second call threw,
+// silently breaking the Save/Delete buttons (clicks did nothing,
+// no console output). Sharing the reference across IIFEs fixes it.
+const vscode: WebviewApi = (typeof acquireVsCodeApi === 'function')
+  ? acquireVsCodeApi()
+  : ({
+      postMessage: (_msg: unknown) => { /* no-op when outside webview (tests) */ },
+      getState: () => ({} as Record<string, unknown>),
+      setState: (_s: unknown) => { /* no-op when outside webview (tests) */ },
+    } as WebviewApi);
+
 /**
  * The shape of the bootstrap payload the extension host injects via a
  * nonce-tagged inline `<script>` before this external script loads.
@@ -66,7 +85,10 @@ declare global {
 }
 
 (function (): void {
-  const vscode: WebviewApi = acquireVsCodeApi();
+  // acquireVsCodeApi() is hoisted to module scope at the top of the
+  // file so both this IIFE and the Save/Delete IIFE below share the
+  // same reference. Sharing is required — VS Code only allows one
+  // call per webview session.
   const bootstrap: TcpBootstrap = window.__TCP_BOOTSTRAP__ ?? { presets: {} };
   const PRESETS: TcpBootstrap['presets'] = bootstrap.presets ?? {};
 
@@ -636,8 +658,11 @@ declare global {
 //   - Save dialog:       #savePresetDialog (+ #savePresetLabel, #savePresetForm, #savePresetCancel)
 //   - Delete dialog:     #deletePresetDialog (+ #deletePresetMessage, #deletePresetForm, #deletePresetCancel)
 // ---------------------------------------------------------------------------
+// acquireVsCodeApi() is called at module scope (see top of file) so
+// both this IIFE and the Save/Delete IIFE below share the same
+// reference. Sharing is required — VS Code only allows one call per
+// webview session.
 (function (): void {
-  const vscode: WebviewApi = acquireVsCodeApi();
   const BUILTIN_IDS: string[] = ['none', 'hl7-mllp', 'hl7-llp'];
 
   // DIAGNOSTIC: every step in the Save/Delete flow logs so you can see
