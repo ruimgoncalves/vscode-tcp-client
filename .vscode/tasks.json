@@ -3,38 +3,16 @@
   "tasks": [
     {
       "label": "build",
-      "dependsOn": ["npm: compile:host", "npm: compile:webview"],
+      "type": "npm",
+      "script": "compile",
       "group": { "kind": "build", "isDefault": true },
-      "problemMatcher": []
+      "problemMatcher": ["$tsc"]
     },
     {
       "label": "watch",
-      "dependsOn": ["npm: watch:host", "npm: watch:webview"],
+      "type": "npm",
+      "script": "watch",
       "group": { "kind": "build" },
-      "problemMatcher": []
-    },
-    {
-      "type": "npm",
-      "script": "compile:host",
-      "problemMatcher": ["$tsc"],
-      "presentation": { "reveal": "silent" }
-    },
-    {
-      "type": "npm",
-      "script": "compile:webview",
-      "problemMatcher": ["$tsc"],
-      "presentation": { "reveal": "silent" }
-    },
-    {
-      "type": "npm",
-      "script": "watch:host",
-      "problemMatcher": ["$tsc-watch"],
-      "isBackground": true,
-      "presentation": { "reveal": "never" }
-    },
-    {
-      "type": "npm",
-      "script": "watch:webview",
       "problemMatcher": ["$tsc-watch"],
       "isBackground": true,
       "presentation": { "reveal": "never" }
