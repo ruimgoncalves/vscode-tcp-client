@@ -3,7 +3,7 @@
   "displayName": "TCP Client",
   "icon": "assets/icon.png",
   "description": "Send and receive TCP messages from VS Code with escape-sequence support",
-  "version": "0.2.1",
+  "version": "0.2.7",
   "publisher": "ruigoncalves",
   "engines": {
     "vscode": "^1.85.0",
@@ -13,6 +13,13 @@
   "keywords": ["tcp", "network", "socket", "client"],
   "activationEvents": [],
   "main": "./out/extension.js",
+  "files": [
+    "out/**",
+    "media/**",
+    "assets/**",
+    "package.json",
+    "README.md"
+  ],
   "contributes": {
     "commands": [
       {
@@ -24,6 +31,12 @@
     "configuration": {
       "title": "TCP Client",
       "properties": {
+        "tcpClient.connection.timeoutMs": {
+          "type": "integer",
+          "default": 10000,
+          "minimum": 0,
+          "markdownDescription": "Connect attempt timeout in milliseconds. Set to 0 to disable."
+        },
         "tcpClient.variables.custom": {
           "type": "array",
           "default": [],
@@ -33,15 +46,58 @@
           "type": "string",
           "default": "YYYY-MM-DDTHH:mm:ss.sssZ",
           "markdownDescription": "Format pattern for the built-in `{{timestamp}}` variable. Supports `YYYY` (year), `MM` (month), `DD` (day), `HH` (hour), `mm` (minute), `ss` (second), `sss` (millisecond), and `Z` (UTC marker). Other characters are treated as literals. Default: ISO 8601 with milliseconds."
+        },
+        "tcpClient.envelopes.custom": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": ["id", "label"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Unique identifier. Must not collide with built-in ids (none, hl7-mllp, hl7-llp) or other custom ids."
+              },
+              "label": {
+                "type": "string",
+                "description": "Human-readable name shown in the dropdown."
+              },
+              "prefix": {
+                "type": "string",
+                "description": "Bytes prepended to payload (escape sequences: \\xHH, \\n, \\r, \\t, \\\\, \\0)."
+              },
+              "suffix": {
+                "type": "string",
+                "description": "Bytes appended to payload (escape sequences: \\xHH, \\n, \\r, \\t, \\\\, \\0)."
+              },
+              "linePrefix": {
+                "type": "string",
+                "description": "Bytes prepended to every newline-separated line (escape sequences)."
+              },
+              "lineSuffix": {
+                "type": "string",
+                "description": "Bytes appended to every newline-separated line (escape sequences)."
+              }
+            }
+          },
+          "markdownDescription": "User-defined envelopes. Each entry defines a framing preset that appears in the panel dropdown alongside the built-ins. The **TCP Client** section of the Settings UI renders this as an editable table; add, edit, or remove entries directly there — changes are saved to settings.json automatically."
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "pretest": "npm run compile",
+    "vsce:prepublish": "npm run compile",
+    "compile": "npm run compile:host && npm run compile:webview",
+    "compile:host": "tsc -p ./",
+    "compile:webview": "tsc -p ./tsconfig.webview.json",
+    "watch": "npm run watch:host & npm run watch:webview",
+    "watch:host": "tsc -watch -p ./",
+    "watch:webview": "tsc -watch -p ./tsconfig.webview.json",
+    "lint:webview": "node scripts/check-webview-js.js",
+    "stubdom:webview": "node scripts/stubdom-webview.js",
+    "check:package": "node scripts/check-package-resources.js",
+    "check:acquire": "node scripts/check-acquire-vscode-api.js",
+    "pretest": "npm run compile && npm run lint:webview && npm run stubdom:webview && npm run check:package && npm run check:acquire",
     "test": "node ./out/test/runTest.js",
     "package": "vsce package --no-dependencies --allow-missing-repository"
   },

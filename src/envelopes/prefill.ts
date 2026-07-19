@@ -1,0 +1,105 @@
+import * as vscode from 'vscode';
+import { EnvelopeDef } from './Envelope';
+
+/** GlobalState key that gates the one-shot HL7 prefill. */
+export const HL7_PREFILL_FLAG_KEY = 'tcpClient.prefilledHL7.v1';
+
+/**
+ * Built-in HL7 envelopes that get copied into `tcpClient.envelopes.custom`
+ * on first activation. Kept in this file (not imported from
+ * `builtins.ts`) so the prefill is fully self-contained — no module-load
+ * side effects depend on the registry, and the prefill unit tests can
+ * stub `vscode.workspace.getConfiguration` without registering builtins.
+ *
+ * The shape matches the live HL7 built-ins exactly: VT prefix, FS suffix,
+ * `\r` line suffix for both. If the actual built-ins change, this list
+ * should be updated to match.
+ *
+ * IDs use a `-copy` suffix (e.g. `hl7-mllp-copy`) so the prefill entries
+ * do NOT shadow the built-in ids. Earlier versions of this prefill wrote
+ * entries with the same id as built-ins (`hl7-mllp`, `hl7-llp`), which
+ * caused the runtime to silently skip them in the dropdown — making them
+ * invisible AND undeletable via the panel's Save/Delete UI. The renamed
+ * form keeps the "editable copy" UX intent but lets the panel manage
+ * the entries normally.
+ */
+export const HL7_PRESETS: ReadonlyArray<EnvelopeDef> = [
+  {
+    id: 'hl7-mllp-copy',
+    label: 'HL7 v2 (MLLP framing) — editable copy',
+    prefix: '\\x0B',
+    suffix: '\\x1C',
+    linePrefix: '',
+    lineSuffix: '\\r',
+  },
+  {
+    id: 'hl7-llp-copy',
+    label: 'HL7 v2 (raw LLP, no VT) — editable copy',
+    prefix: '',
+    suffix: '\\x1C',
+    linePrefix: '',
+    lineSuffix: '\\r',
+  },
+];
+
+/**
+ * Reads the current custom envelopes from configuration. Defensive
+ * against malformed settings — returns [] when the value isn't an array
+ * or has any non-object entries. Mirrors `Envelope.getCustom()`'s
+ * posture without importing it (the prefill runs at activation before
+ * the registry is necessarily seeded).
+ */
+function readCustomEnvelopes(): EnvelopeDef[] {
+  const raw = vscode.workspace
+    .getConfiguration('tcpClient')
+    .get<unknown>('envelopes.custom', []);
+  if (!Array.isArray(raw)) { return []; }
+  return raw.filter((e): e is EnvelopeDef => !!e && typeof e === 'object');
+}
+
+/**
+ * Writes the custom-envelopes array back to configuration. Coerces the
+ * target to ConfigurationTarget.Global so the prefill is visible across
+ * workspaces — same target the user would use if they added the
+ * envelopes by hand in the Settings UI.
+ */
+async function writeCustomEnvelopes(list: EnvelopeDef[]): Promise<void> {
+  await vscode.workspace.getConfiguration('tcpClient').update(
+    'envelopes.custom',
+    list,
+    vscode.ConfigurationTarget.Global
+  );
+}
+
+/**
+ * One-shot HL7 prefill. On first activation, copies the two HL7
+ * built-ins into `tcpClient.envelopes.custom` so they appear as
+ * editable user presets in the panel dropdown.
+ *
+ * Idempotent: the `HL7_PREFILL_FLAG_KEY` globalState bit is set after
+ * the first run. Subsequent calls return `{ ran: false }` immediately
+ * without touching settings. The flag is local to the extension's
+ * globalState, so it persists across activations but resets if the
+ * user clears the extension's storage.
+ */
+export async function maybePrefillHL7Envelopes(
+  context: vscode.ExtensionContext
+): Promise<{ ran: boolean; added: number }> {
+  if (context.globalState.get<boolean>(HL7_PREFILL_FLAG_KEY)) {
+    return { ran: false, added: 0 };
+  }
+
+  const existing = readCustomEnvelopes();
+  const existingIds = new Set(existing.map((e) => e.id));
+
+  // Append only the HL7 presets that aren't already present. If the
+  // user already added hl7-mllp-copy / hl7-llp-copy themselves, we
+  // don't duplicate.
+  const toAdd = HL7_PRESETS.filter((p) => !existingIds.has(p.id));
+  if (toAdd.length > 0) {
+    await writeCustomEnvelopes([...existing, ...toAdd]);
+  }
+
+  await context.globalState.update(HL7_PREFILL_FLAG_KEY, true);
+  return { ran: true, added: toAdd.length };
+}

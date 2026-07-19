@@ -3,7 +3,12 @@ name: Publish VS Code Extension
 on:
   release:
     types: [published]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish'
+        required: true
+        type: string
   push:
     tags:
       - 'v*'
@@ -22,17 +27,40 @@ jobs:
 
       - run: npm ci
       - run: npm run compile --if-present
+      - run: npm run lint:webview
 
-      - name: Extract version from tag
-        id: version
+      - name: Resolve tag and pre-release flag
+        id: tag
         run: |
-          TAG=${GITHUB_REF#refs/tags/}
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG=${GITHUB_REF#refs/tags/}
+          fi
           VERSION=${TAG#v}
+          if [[ "$VERSION" == *-* ]]; then
+            PRERELEASE="--pre-release"
+          else
+            PRERELEASE=""
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "prerelease=$PRERELEASE" >> $GITHUB_OUTPUT
 
       - name: Update package.json version
         run: |
-          npm version ${{ steps.version.outputs.version }} --no-git-tag-version --allow-same-version
+          PUBLISH_VERSION=$(echo "${{ steps.tag.outputs.version }}" | sed -E 's/-.*$//')
+          echo "Setting package.json version to $PUBLISH_VERSION (tag was ${{ steps.tag.outputs.version }})"
+          npm version "$PUBLISH_VERSION" --no-git-tag-version --allow-same-version
 
       - name: Publish to VS Code Marketplace
-        run: npx @vscode/vsce publish -p "${{ secrets.VSCE_PAT }}"
+        run: |
+          npx @vscode/vsce publish ${{ steps.tag.outputs.prerelease }} -p "${{ secrets.VSCE_PAT }}"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Publish summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Tag: \`${{ steps.tag.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Version: \`${{ steps.tag.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Channel: ${{ steps.tag.outputs.prerelease == '--pre-release' && 'pre-release' || 'stable' }}" >> $GITHUB_STEP_SUMMARY

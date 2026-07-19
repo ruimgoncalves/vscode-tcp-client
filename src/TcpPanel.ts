@@ -1,7 +1,12 @@
 import * as vscode from 'vscode';
 import { TcpClient, ConnectionState } from './TcpClient';
 import { encodeMessage, formatBytes, TextEncoding } from './MessageEncoder';
-import { listBuiltin, wrap } from './envelopes/Envelope';
+import { listBuiltin, getAll as getAllEnvelopes, wrap } from './envelopes/Envelope';
+import { envelopePanelFragment } from './envelopes/panelHtml';
+import {
+  registerEnvelopeHostHandlers,
+  subscribeEnvelopeConfigChanges,
+} from './envelopes/hostHandlers';
 import {
   getAll as getAllVariables,
   substitute,
@@ -16,6 +21,7 @@ interface WebviewMessage {
   type:
     | 'connect'
     | 'disconnect'
+    | 'cancelConnect'
     | 'send'
     | 'getState'
     | 'getVariables'
@@ -137,6 +143,7 @@ export class TcpPanel {
   private readonly _tcpClient: TcpClient;
   private readonly _disposables: vscode.Disposable[] = [];
   private readonly _ctx: vscode.ExtensionContext;
+  private readonly _extensionUri: vscode.Uri;
   private _server = '';
   private _lastSendTime: number | null = null;
   // Per-panel sequence counter. Starts at 1 when the panel is created
@@ -156,13 +163,27 @@ export class TcpPanel {
       TcpPanel.viewType,
       'TCP Client',
       column,
-      { enableScripts: true, retainContextWhenHidden: true }
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        // Allow the webview to load external CSS/JS from media/panel.css
+        // and out/webview/main.js. Without this, asWebviewUri() produces a URL
+        // the webview cannot fetch (CSP + webview sandbox blocks anything
+        // not in localResourceRoots).
+        localResourceRoots: [
+          vscode.Uri.joinPath(extensionUri, 'media'),
+          // Webview JS lives under out/webview/ now (compiled from
+          // src/webview/main.ts via tsconfig.webview.json).
+          vscode.Uri.joinPath(extensionUri, 'out', 'webview'),
+        ],
+      }
     );
     TcpPanel.currentPanel = new TcpPanel(panel, extensionUri, extensionContext);
   }
 
   private constructor(panel: vscode.WebviewPanel, _extensionUri: vscode.Uri, extensionContext: vscode.ExtensionContext) {
     this._panel = panel;
+    this._extensionUri = _extensionUri;
     this._ctx = extensionContext;
     this._tcpClient = new TcpClient();
     this._panel.webview.html = this._getHtmlForWebview(panel.webview);
@@ -172,6 +193,15 @@ export class TcpPanel {
       null,
       this._disposables
     );
+
+    // Envelope Save / Delete IPC handlers (independent listener — they
+    // own their own message types and don't need to share the
+    // _handleWebviewMessage switch).
+    this._disposables.push(registerEnvelopeHostHandlers(this._panel));
+    // External settings.json edits (hand-edit, Settings UI, another
+    // extension) broadcast a fresh envelope list to the webview so the
+    // dropdown stays in sync without the user reopening the panel.
+    this._disposables.push(subscribeEnvelopeConfigChanges(this._panel));
 
     this._tcpClient.on('stateChange', (state: ConnectionState) => {
       this._panel.webview.postMessage({ type: 'stateChange', state, server: this._server });
@@ -219,6 +249,14 @@ export class TcpPanel {
       }
       case 'disconnect':
         this._tcpClient.disconnect();
+        break;
+      case 'cancelConnect':
+        // User clicked the Connect button while it was showing the
+        // "Cancel" label (see setUiState's connecting branch). Tear down
+        // the in-flight socket and reject the pending connect promise.
+        // Safe to call when the client isn't connecting — `cancel()` is
+        // a no-op in that case.
+        this._tcpClient.cancel();
         break;
       case 'send': {
         try {
@@ -371,11 +409,37 @@ export class TcpPanel {
     const nonce = getNonce();
     // Render the envelope options server-side so the dropdown is populated
     // immediately, even before any async message round-trip. The list
-    // contains only built-ins; user envelopes are no longer configurable
-    // via settings.json (the always-visible fields in the UI cover that).
-    const envelopeOptions = listBuiltin()
+    // includes built-ins first, then custom envelopes read from
+    // `tcpClient.envelopes.custom` in settings.json. Custom envelopes are
+    // configured via the Settings UI (which renders the array-of-object
+    // schema natively) — no in-panel add/delete dialog needed.
+    //
+    // External edits to `tcpClient.envelopes.custom` while the panel is
+    // open take effect on the next panel open, matching the existing
+    // `variables.custom` behaviour. Inline edits the user makes via the
+    // Settings UI will reflect immediately if they trigger a webview
+    // reload (the standard VS Code Settings UI does).
+    const envelopeOptions = getAllEnvelopes()
       .map((e) => `<option value="${escapeHtmlAttr(e.id)}">${escapeHtmlAttr(e.label)}</option>`)
       .join('');
+
+    // External CSS/JS resources shipped via media/panel.css and
+    // out/webview/main.js (compiled from src/webview/main.ts by
+    // tsconfig.webview.json). Resolve them through asWebviewUri() so
+    // VS Code generates the special https://*.vscode-cdn.net URL the
+    // webview can actually fetch (relative paths would 404). See:
+    // https://code.visualstudio.com/api/extension-guides/webview#loading-local-content
+    const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'panel.css'));
+    const mainScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'main.js'));
+
+    // Ship the PRESETS map (per-render envelope specs) into the webview
+    // via a tiny nonce-tagged inline bootstrap script. main.js reads
+    // `window.__TCP_BOOTSTRAP__.presets` on load. This is the standard
+    // escape-hatch for sending structured data into an external webview
+    // script while keeping CSP strict (no 'unsafe-inline' on script-src).
+    const PRESETS_JSON = JSON.stringify(
+      Object.fromEntries(getAllEnvelopes().map((e) => [e.id, e.spec]))
+    );
     // The envelope fields in the UI prefill from the *currently selected*
     // preset, so the server-rendered HTML shows the right placeholders on
     // first paint without waiting for a client-side bootstrap round-trip.
@@ -389,275 +453,10 @@ export class TcpPanel {
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy"
-  content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TCP Client</title>
-<style>
-  *, *::before, *::after { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 14px;
-    font-family: var(--vscode-font-family);
-    font-size: var(--vscode-font-size);
-    color: var(--vscode-foreground);
-    background: var(--vscode-editor-background);
-    display: flex; flex-direction: column; height: 100vh; gap: 10px; overflow: hidden;
-  }
-  .row { display: flex; align-items: center; gap: 8px; }
-  label {
-    font-size: 11px; color: var(--vscode-descriptionForeground);
-    text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; min-width: 60px;
-  }
-  input[type="text"], select, textarea {
-    background: var(--vscode-input-background);
-    color: var(--vscode-input-foreground);
-    border: 1px solid var(--vscode-input-border, transparent);
-    padding: 4px 8px; border-radius: 2px; outline: none;
-    font-family: inherit; font-size: inherit;
-  }
-  input[type="text"]:focus, select:focus, textarea:focus { border-color: var(--vscode-focusBorder); }
-  #server { flex: 1; }
-  button {
-    padding: 4px 14px; border: none; border-radius: 2px; cursor: pointer;
-    font-family: inherit; font-size: inherit; white-space: nowrap;
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
-  }
-  button:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
-  button:disabled { opacity: .5; cursor: not-allowed; }
-  button.sec {
-    background: var(--vscode-button-secondaryBackground);
-    color: var(--vscode-button-secondaryForeground);
-  }
-  button.sec:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
-
-  /* Connect button colour by state */
-  #connectBtn[data-state="connecting"] { opacity: .75; }
-  #connectBtn[data-state="connected"]  { background: #c0392b; color: #fff; }
-
-  /* Status indicator dot */
-  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: #888; }
-  .dot[data-state="connecting"] { background: #e9a700; animation: blink .8s step-end infinite; }
-  .dot[data-state="connected"]  { background: #4ec9b0; }
-  @keyframes blink { 50% { opacity: 0; } }
-
-  .sec-label {
-    font-size: 11px; color: var(--vscode-descriptionForeground);
-    text-transform: uppercase; letter-spacing: .04em; flex: 1;
-    border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,.3));
-    padding-bottom: 3px;
-  }
-  .hint { font-size: 11px; color: var(--vscode-descriptionForeground); flex: 1; }
-
-  /* Message area */
-  .msg-wrap { display: flex; flex-direction: column; gap: 6px; }
-  textarea#msg {
-    width: 100%; height: 80px; resize: vertical;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: var(--vscode-editor-font-size, 13px);
-  }
-
-  /* Log area */
-  .log-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 6px; }
-  #log {
-    flex: 1; overflow-y: auto;
-    background: var(--vscode-terminal-background, var(--vscode-editor-background));
-    border: 1px solid var(--vscode-widget-border, rgba(128,128,128,.3));
-    border-radius: 2px; padding: 8px;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: var(--vscode-editor-font-size, 13px);
-  }
-  .e { display: flex; gap: 6px; margin-bottom: 1px; line-height: 1.5; align-items: baseline; }
-  .e .ts   { color: var(--vscode-descriptionForeground); font-size: .82em; flex-shrink: 0; }
-  .e .ic   { flex-shrink: 0; }
-  .e .tx   { word-break: break-all; }
-  .e .mt   { color: var(--vscode-descriptionForeground); font-size: .85em; flex-shrink: 0; }
-  .e.sent .ic { color: #4fc3f7; }
-  .e.recv .ic { color: #81c784; }
-  .e.info .ic { color: var(--vscode-descriptionForeground); }
-  .e.err  .ic, .e.err .tx { color: #f44747; }
-
-  /* Variables section */
-  .vars-wrap {
-    display: flex; flex-direction: column; gap: 6px;
-    max-height: 220px; flex-shrink: 0;
-  }
-  .vars-body { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
-  .var-row {
-    display: flex; align-items: center; gap: 6px;
-    padding: 2px 4px; border-radius: 2px;
-  }
-  .var-row.builtin { background: var(--vscode-textBlockQuote-background, rgba(128,128,128,.07)); }
-  .var-row .var-name {
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: var(--vscode-editor-font-size, 13px);
-    font-weight: 600; flex-shrink: 0; min-width: 80px;
-  }
-  .var-row .var-value {
-    flex: 1; min-width: 0;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: var(--vscode-editor-font-size, 13px);
-    color: var(--vscode-foreground);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .var-row .var-del {
-    flex-shrink: 0; padding: 2px 8px; font-size: 11px;
-  }
-  .var-empty {
-    color: var(--vscode-descriptionForeground);
-    font-size: 11px; font-style: italic; padding: 4px;
-  }
-  .var-add {
-    display: flex; align-items: center; gap: 6px; margin-top: 2px;
-  }
-  .var-add input { flex: 1; min-width: 0; }
-  .var-add input.name { flex: 0 0 100px; }
-  .var-add button { flex-shrink: 0; }
-
-  /* Header row with title + help button */
-  .header-row {
-    display: flex; align-items: center; justify-content: space-between;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,.3));
-    margin-bottom: 2px;
-  }
-  .header-title { font-weight: 600; font-size: 13px; }
-  .help-btn {
-    width: 24px; height: 24px; padding: 0; border-radius: 50%;
-    font-size: 13px; font-weight: 700; line-height: 1;
-    background: #f5c518; color: #1a1a1a;
-    border: 1px solid #c9a012;
-    opacity: .85;
-  }
-  .help-btn:hover {
-    opacity: 1;
-    background: #ffd633;
-    border-color: #b89010;
-  }
-  .help-btn:focus { outline: 2px solid #ffd633; outline-offset: 1px; }
-
-  /* Envelope editor: always-visible 4-field grid below the preset dropdown */
-  .envelope-notice {
-    background: var(--vscode-notifications-background, var(--vscode-editorWidget-background));
-    color: var(--vscode-notifications-foreground, var(--vscode-foreground));
-    border: 1px solid var(--vscode-notifications-border, var(--vscode-widget-border));
-    font-size: 11px;
-    padding: 4px 8px;
-    border-radius: 2px;
-    margin: -2px 0 4px 0;
-  }
-  .envelope-fields {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px 10px;
-    margin-left: 90px;       /* matches label column width of .row */
-    margin-bottom: 8px;
-  }
-  @media (max-width: 520px) {
-    .envelope-fields { grid-template-columns: 1fr; margin-left: 0; }
-  }
-  .env-field { display: flex; flex-direction: column; gap: 2px; }
-  .env-field label {
-    font-size: 11px;
-    color: var(--vscode-descriptionForeground);
-    text-transform: uppercase;
-    letter-spacing: .04em;
-  }
-  .env-input-wrap { position: relative; }
-  .env-field input {
-    width: 100%;
-    height: 24px;
-    padding: 2px 24px 2px 6px;       /* right padding reserves space for the reset button */
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: var(--vscode-editor-font-size, 12px);
-  }
-  .env-reset {
-    position: absolute;
-    right: 2px; top: 2px;
-    width: 18px; height: 18px;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--vscode-descriptionForeground);
-    cursor: pointer;
-    font-size: 13px;
-    line-height: 1;
-    border-radius: 2px;
-  }
-  .env-reset:hover { background: var(--vscode-button-secondaryHoverBackground); color: var(--vscode-foreground); }
-  .env-reset[hidden] { display: none; }
-
-  /* Syntax help modal */
-  .modal-backdrop {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.4);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 100;
-    animation: fade-in 150ms ease-out;
-  }
-  .modal-backdrop[hidden] { display: none; }
-  .modal {
-    background: var(--vscode-editor-background);
-    border: 1px solid var(--vscode-widget-border, rgba(128,128,128,.3));
-    border-radius: 4px;
-    padding: 16px 20px;
-    max-width: 720px; max-height: 70vh;
-    width: 100%;
-    overflow: hidden;
-    position: relative;
-    display: flex; flex-direction: column; gap: 10px;
-    animation: slide-up 150ms ease-out;
-  }
-  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-  @keyframes slide-up { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-  .modal h2 { margin: 0; font-size: 14px; font-weight: 600; }
-  .modal-close {
-    position: absolute; top: 8px; right: 8px;
-    width: 24px; height: 24px; padding: 0; border-radius: 2px;
-    font-size: 16px; line-height: 1;
-  }
-  .modal-body {
-    display: flex; gap: 16px; overflow: hidden; flex: 1;
-  }
-  .help-section {
-    flex: 1; display: flex; flex-direction: column; gap: 8px;
-    overflow-y: auto; min-width: 0;
-  }
-  .help-section h3 {
-    margin: 0; font-size: 11px; color: var(--vscode-descriptionForeground);
-    text-transform: uppercase; letter-spacing: .04em;
-  }
-  .preview-toggle {
-    display: flex; align-items: center; gap: 6px;
-    font-size: 11px; color: var(--vscode-descriptionForeground);
-    cursor: pointer;
-  }
-  .help-table {
-    width: 100%; border-collapse: collapse; font-size: 12px;
-  }
-  .help-table th {
-    text-align: left; padding: 4px 6px;
-    color: var(--vscode-descriptionForeground);
-    font-weight: normal; font-size: 11px;
-    border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,.3));
-  }
-  .help-table td {
-    padding: 4px 6px;
-    border-bottom: 1px solid var(--vscode-widget-border, rgba(128,128,128,.15));
-    vertical-align: top;
-  }
-  .help-table tr.help-row { cursor: pointer; }
-  .help-table tr.help-row:hover td { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.1)); }
-  .help-table code {
-    font-family: var(--vscode-editor-font-family, monospace);
-    background: var(--vscode-textCodeBlock-background, rgba(128,128,128,.15));
-    padding: 1px 4px; border-radius: 2px;
-  }
-  .preview-arrow {
-    color: var(--vscode-descriptionForeground);
-    margin-left: 6px;
-    font-family: var(--vscode-editor-font-family, monospace);
-  }
-</style>
+<link rel="stylesheet" href="${styleUri}">
 </head>
 <body>
 
@@ -683,12 +482,7 @@ export class TcpPanel {
   </select>
 </div>
 
-<div class="row">
-  <label for="envelope">Envelope</label>
-  <select id="envelope">
-    ${envelopeOptions}
-  </select>
-</div>
+${envelopePanelFragment({ envelopeOptions })}
 
 <div id="envelope-notice" class="envelope-notice" hidden></div>
 
@@ -782,490 +576,9 @@ export class TcpPanel {
   </div>
 </div>
 
-<script nonce="${nonce}">
-(function () {
-  var vscode    = acquireVsCodeApi();
-  var serverEl  = document.getElementById('server');
-  var connectEl = document.getElementById('connectBtn');
-  var dotEl     = document.getElementById('dot');
-  var encEl     = document.getElementById('encoding');
-  var envEl     = document.getElementById('envelope');
-  var envFields = {
-    prefix:     document.getElementById('envelope-prefix'),
-    suffix:     document.getElementById('envelope-suffix'),
-    linePrefix: document.getElementById('envelope-linePrefix'),
-    lineSuffix: document.getElementById('envelope-lineSuffix'),
-  };
-  var envResets = {
-    prefix:     document.getElementById('envelope-reset-prefix'),
-    suffix:     document.getElementById('envelope-reset-suffix'),
-    linePrefix: document.getElementById('envelope-reset-linePrefix'),
-    lineSuffix: document.getElementById('envelope-reset-lineSuffix'),
-  };
-  var envNotice = document.getElementById('envelope-notice');
-  // Preset definitions injected from the extension host as JSON.
-// (Replaced below by string-concat so the template-literal escape-twice
-// problem doesn't mangle backslash sequences like \x0B.)
-    var PRESETS = __PRESETS_PLACEHOLDER__;
-  var msgEl     = document.getElementById('msg');
-  var sendEl    = document.getElementById('sendBtn');
-  var clearEl   = document.getElementById('clearBtn');
-  var logEl     = document.getElementById('log');
-  var varsBodyEl = document.getElementById('varsBody');
-  var newVarNameEl  = document.getElementById('newVarName');
-  var newVarValueEl = document.getElementById('newVarValue');
-  var addVarBtnEl   = document.getElementById('addVarBtn');
-  var helpBtn        = document.getElementById('helpBtn');
-  var helpBackdrop   = document.getElementById('helpBackdrop');
-  var helpCloseBtn   = document.getElementById('helpCloseBtn');
-  var livePreviewToggle = document.getElementById('livePreviewToggle');
-  var escapeTable    = document.getElementById('escapeTable');
-  var varsTable      = document.getElementById('varsTable');
-  var connState = 'disconnected';
-  // Holds the most recent variables snapshot from the extension.
-  var varsState = { custom: [] };
-
-  // Cache the cheat-sheet data so the live-preview toggle doesn't refetch
-  var helpData = { escapes: [], builtins: [], userVars: [] };
-
-  // Restore session-scoped preferences from the webview state
-  // (vscode.setState survives hide/show of the panel within a VS Code
-  // session, but dies with the webview on restart — fine for transient
-  // dropdown selections).
-  //
-  // The message text is intentionally NOT restored here: it comes from
-  // extensionContext.globalState via a getPersistedMessage round-trip
-  // below, so it survives VS Code restarts.
-  var saved = vscode.getState() || {};
-  if (saved.server)   { serverEl.value = saved.server; }
-  if (saved.encoding) { encEl.value    = saved.encoding; }
-  if (saved.envelope) { envEl.value    = saved.envelope; }
-  // Restore the envelope spec (per-field overrides) if the previous session
-  // had any. The dropdown alone doesn't capture modifications.
-  if (saved.envelopePrefix     !== undefined) { envFields.prefix.value     = saved.envelopePrefix; }
-  if (saved.envelopeSuffix     !== undefined) { envFields.suffix.value     = saved.envelopeSuffix; }
-  if (saved.envelopeLinePrefix !== undefined) { envFields.linePrefix.value = saved.envelopeLinePrefix; }
-  if (saved.envelopeLineSuffix !== undefined) { envFields.lineSuffix.value = saved.envelopeLineSuffix; }
-
-  function persistPrefs() {
-    vscode.setState({
-      server: serverEl.value,
-      encoding: encEl.value,
-      envelope: envEl.value,
-      envelopePrefix:     envFields.prefix.value,
-      envelopeSuffix:     envFields.suffix.value,
-      envelopeLinePrefix: envFields.linePrefix.value,
-      envelopeLineSuffix: envFields.lineSuffix.value,
-    });
-  }
-  serverEl.addEventListener('input', persistPrefs);
-  encEl.addEventListener('change', persistPrefs);
-  envEl.addEventListener('change', persistPrefs);
-
-  // ---------------------------------------------------------------------
-  // Envelope editor: prefilling, modified-state, reset, inline notice
-  // ---------------------------------------------------------------------
-
-  function presetFor(id) {
-    return PRESETS[id] || PRESETS['none'];
-  }
-
-  function currentPreset() {
-    return presetFor(envEl.value || 'none');
-  }
-
-  function isFieldModified(field) {
-    return envFields[field].value !== currentPreset()[field];
-  }
-
-  function refreshResetButtons() {
-    envResets.prefix.hidden     = !isFieldModified('prefix');
-    envResets.suffix.hidden     = !isFieldModified('suffix');
-    envResets.linePrefix.hidden = !isFieldModified('linePrefix');
-    envResets.lineSuffix.hidden = !isFieldModified('lineSuffix');
-  }
-
-  function showPresetNotice(text) {
-    if (!envNotice) { return; }
-    envNotice.textContent = text;
-    envNotice.hidden = false;
-    if (envNotice._timer) { clearTimeout(envNotice._timer); }
-    envNotice._timer = setTimeout(function () { envNotice.hidden = true; }, 3000);
-  }
-
-  function fieldsMatchPreset() {
-    var p = currentPreset();
-    return envFields.prefix.value     === p.prefix
-        && envFields.suffix.value     === p.suffix
-        && envFields.linePrefix.value === p.linePrefix
-        && envFields.lineSuffix.value === p.lineSuffix;
-  }
-
-  function applyPreset(id, opts) {
-    var p = presetFor(id);
-    envFields.prefix.value     = p.prefix;
-    envFields.suffix.value     = p.suffix;
-    envFields.linePrefix.value = p.linePrefix;
-    envFields.lineSuffix.value = p.lineSuffix;
-    refreshResetButtons();
-    if (opts && opts.notice && !fieldsMatchPreset()) {
-      var labels = {
-        'none':     'None (raw)',
-        'hl7-mllp': 'HL7 v2 (MLLP framing)',
-        'hl7-llp':  'HL7 v2 (raw LLP)',
-      };
-      showPresetNotice('Replaced with ' + (labels[id] || id) + ' preset.');
-    }
-  }
-
-  // Switching the dropdown auto-fills the fields. We skip the notice if the
-  // user just re-picks the same preset or if the fields already match.
-  envEl.addEventListener('change', function () {
-    var wasModified = !fieldsMatchPreset();
-    applyPreset(envEl.value, { notice: true });
-    if (wasModified) {
-      persistPrefs();
-    } else {
-      persistPrefs();
-    }
-  });
-
-  // Editing a field toggles its reset button (hidden when equal to preset).
-  ['prefix', 'suffix', 'linePrefix', 'lineSuffix'].forEach(function (f) {
-    envFields[f].addEventListener('input', function () {
-      envResets[f].hidden = !isFieldModified(f);
-      persistPrefs();
-    });
-  });
-
-  // Per-field reset ↺ buttons: revert to the current preset's default.
-  ['prefix', 'suffix', 'linePrefix', 'lineSuffix'].forEach(function (f) {
-    envResets[f].addEventListener('click', function () {
-      envFields[f].value = currentPreset()[f];
-      envResets[f].hidden = true;
-      persistPrefs();
-    });
-  });
-
-  // After restoring persisted state, sync reset-button visibility.
-  refreshResetButtons();
-
-  // Ask the extension for the last persisted message so it survives VS
-  // Code restarts. The reply (see 'persistedMessage' handler below)
-  // populates the textarea on load.
-  vscode.postMessage({ type: 'getPersistedMessage' });
-
-  function setUiState(s) {
-    connState = s;
-    connectEl.dataset.state = s;
-    dotEl.dataset.state = s;
-    if (s === 'disconnected') {
-      connectEl.textContent = 'Connect';
-      connectEl.disabled = false;
-      sendEl.disabled = true;
-    } else if (s === 'connecting') {
-      connectEl.textContent = 'Connecting\u2026';
-      connectEl.disabled = true;
-      sendEl.disabled = true;
-    } else {
-      connectEl.textContent = 'Disconnect';
-      connectEl.disabled = false;
-      sendEl.disabled = false;
-    }
-  }
-
-  function ts() {
-    var d = new Date();
-    function p2(n) { return n < 10 ? '0'+n : ''+n; }
-    function p3(n) { return n < 10 ? '00'+n : n < 100 ? '0'+n : ''+n; }
-    return '['+p2(d.getHours())+':'+p2(d.getMinutes())+':'+p2(d.getSeconds())+'.'+p3(d.getMilliseconds())+']';
-  }
-
-  function appendLog(cls, icon, text, meta) {
-    var e  = document.createElement('div'); e.className = 'e ' + cls;
-    var t  = document.createElement('span'); t.className = 'ts'; t.textContent = ts();
-    var ic = document.createElement('span'); ic.className = 'ic'; ic.textContent = icon;
-    var tx = document.createElement('span'); tx.className = 'tx'; tx.textContent = text;
-    e.appendChild(t); e.appendChild(ic); e.appendChild(tx);
-    if (meta) {
-      var m = document.createElement('span'); m.className = 'mt'; m.textContent = ' ' + meta;
-      e.appendChild(m);
-    }
-    logEl.appendChild(e);
-    logEl.scrollTop = logEl.scrollHeight;
-  }
-
-  connectEl.addEventListener('click', function () {
-    if (connState === 'disconnected') {
-      var s = serverEl.value.trim();
-      if (!s) { return; }
-      setUiState('connecting');
-      vscode.postMessage({ type: 'connect', server: s });
-    } else if (connState === 'connected') {
-      vscode.postMessage({ type: 'disconnect' });
-    }
-  });
-
-  function doSend() {
-    if (connState !== 'connected') { return; }
-    var text = msgEl.value;
-    if (!text) { return; }
-    vscode.postMessage({
-      type: 'send',
-      message: text,
-      encoding: encEl.value,
-      envelopeId: envEl.value || 'none',
-      envelopePrefix:     envFields.prefix.value,
-      envelopeSuffix:     envFields.suffix.value,
-      envelopeLinePrefix: envFields.linePrefix.value,
-      envelopeLineSuffix: envFields.lineSuffix.value,
-    });
-  }
-
-  sendEl.addEventListener('click', doSend);
-  msgEl.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); doSend(); }
-  });
-  clearEl.addEventListener('click', function () { logEl.innerHTML = ''; });
-
-  // -------------------------------------------------------------------------
-  // Variables section
-  // -------------------------------------------------------------------------
-  function renderVars() {
-    // Custom variable list only — built-in variables (timestamp, seq, uuid)
-    // are documented in the message textarea placeholder, not listed here,
-    // because they're not user-editable.
-    varsBodyEl.innerHTML = '';
-    if (varsState.custom.length === 0) {
-      var empty = document.createElement('div');
-      empty.className = 'var-empty';
-      empty.textContent = '(no user variables — add one below)';
-      varsBodyEl.appendChild(empty);
-    } else {
-      for (var i = 0; i < varsState.custom.length; i++) {
-        var v = varsState.custom[i];
-        var row = document.createElement('div');
-        row.className = 'var-row';
-        var nm = document.createElement('span');
-        nm.className = 'var-name'; nm.textContent = v.name;
-        var vv = document.createElement('span');
-        vv.className = 'var-value'; vv.textContent = v.value;
-        vv.title = v.value;  // full value on hover for long values
-        var del = document.createElement('button');
-        del.className = 'sec var-del'; del.textContent = '\u00d7';
-        del.title = 'Delete ' + v.name;
-        del.addEventListener('click', (function (name) {
-          return function () {
-            vscode.postMessage({ type: 'deleteVariable', name: name });
-          };
-        })(v.name));
-        row.appendChild(nm); row.appendChild(vv); row.appendChild(del);
-        varsBodyEl.appendChild(row);
-      }
-    }
-  }
-
-  // -----------------------------------------------------------------
-  // Syntax help modal
-  // -----------------------------------------------------------------
-  function openHelp() {
-    // Fetch fresh data each time so user vars reflect the latest settings
-    vscode.postMessage({ type: 'getSyntaxHelp' });
-    helpBackdrop.hidden = false;
-  }
-  function closeHelp() {
-    helpBackdrop.hidden = true;
-  }
-  helpBtn.addEventListener('click', openHelp);
-  helpCloseBtn.addEventListener('click', closeHelp);
-  helpBackdrop.addEventListener('click', function (e) {
-    if (e.target === helpBackdrop) { closeHelp(); }
-  });
-  document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && !helpBackdrop.hidden) { closeHelp(); }
-  });
-  livePreviewToggle.addEventListener('change', renderVarsTable);
-
-  function makeHelpRow(td1Content, td2Content, onClick) {
-    var tr = document.createElement('tr');
-    tr.className = 'help-row';
-    tr.title = 'Click to paste into the message';
-    var c1 = document.createElement('td');
-    c1.appendChild(td1Content);
-    var c2 = document.createElement('td');
-    if (typeof td2Content === 'string') { c2.textContent = td2Content; }
-    else { c2.appendChild(td2Content); }
-    tr.appendChild(c1); tr.appendChild(c2);
-    tr.addEventListener('click', onClick);
-    return tr;
-  }
-  function makeCode(text) {
-    var code = document.createElement('code');
-    code.textContent = text;
-    return code;
-  }
-
-  function renderEscapeTable() {
-    escapeTable.innerHTML = '';
-    var htr = document.createElement('tr');
-    var h1 = document.createElement('th'); h1.textContent = 'Sequence';
-    var h2 = document.createElement('th'); h2.textContent = 'Meaning';
-    htr.appendChild(h1); htr.appendChild(h2);
-    escapeTable.appendChild(htr);
-    for (var i = 0; i < helpData.escapes.length; i++) {
-      var e = helpData.escapes[i];
-      escapeTable.appendChild(makeHelpRow(makeCode(e.seq), e.meaning, (function (text) {
-        return function () { pasteIntoMessage(text); closeHelp(); };
-      })(e.seq)));
-    }
-  }
-
-  function renderVarsTable() {
-    varsTable.innerHTML = '';
-    var htr = document.createElement('tr');
-    var h1 = document.createElement('th'); h1.textContent = 'Syntax';
-    var h2 = document.createElement('th'); h2.textContent = 'Description';
-    htr.appendChild(h1); htr.appendChild(h2);
-    varsTable.appendChild(htr);
-
-    var i, tr;
-    for (i = 0; i < helpData.builtins.length; i++) {
-      var b = helpData.builtins[i];
-      var desc;
-      if (livePreviewToggle.checked && b.preview) {
-        desc = document.createElement('span');
-        desc.textContent = b.description;
-        var arrow = document.createElement('span');
-        arrow.className = 'preview-arrow';
-        arrow.textContent = '\u2192 ' + b.preview;
-        desc.appendChild(arrow);
-      } else {
-        desc = document.createTextNode(b.description);
-      }
-      varsTable.appendChild(makeHelpRow(makeCode(b.syntax), desc, (function (text) {
-        return function () { pasteIntoMessage(text); closeHelp(); };
-      })(b.syntax)));
-    }
-
-    if (helpData.userVars.length === 0) {
-      tr = document.createElement('tr');
-      var td = document.createElement('td');
-      td.colSpan = 2;
-      td.style.color = 'var(--vscode-descriptionForeground)';
-      td.style.fontStyle = 'italic';
-      td.textContent = '(no user variables defined)';
-      tr.appendChild(td);
-      varsTable.appendChild(tr);
-    } else {
-      for (var j = 0; j < helpData.userVars.length; j++) {
-        var uv = helpData.userVars[j];
-        var name = '{{' + uv.name + '}}';
-        var desc2;
-        if (livePreviewToggle.checked) {
-          desc2 = document.createElement('span');
-          desc2.textContent = 'User variable';
-          var arrow2 = document.createElement('span');
-          arrow2.className = 'preview-arrow';
-          arrow2.textContent = '\u2192 ' + uv.value;
-          desc2.appendChild(arrow2);
-        } else {
-          desc2 = document.createTextNode('User variable');
-        }
-        varsTable.appendChild(makeHelpRow(makeCode(name), desc2, (function (text) {
-          return function () { pasteIntoMessage(text); closeHelp(); };
-        })(name)));
-      }
-    }
-  }
-
-  addVarBtnEl.addEventListener('click', function () {
-    var name = newVarNameEl.value.trim();
-    var value = newVarValueEl.value;
-    if (!name) { return; }  // empty inputs are rejected silently
-    vscode.postMessage({ type: 'addVariable', name: name, value: value });
-    newVarNameEl.value = '';
-    newVarValueEl.value = '';
-  });
-  // Pressing Enter in the value field also submits the form.
-  newVarValueEl.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') { e.preventDefault(); addVarBtnEl.click(); }
-  });
-  newVarNameEl.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') { e.preventDefault(); addVarBtnEl.click(); }
-  });
-
-  function pasteIntoMessage(text) {
-    var start = msgEl.selectionStart || 0;
-    var end   = msgEl.selectionEnd || 0;
-    msgEl.value = msgEl.value.substring(0, start) + text + msgEl.value.substring(end);
-    var newPos = start + text.length;
-    msgEl.selectionStart = msgEl.selectionEnd = newPos;
-    msgEl.focus();
-    persist();
-  }
-
-  window.addEventListener('message', function (ev) {
-    var m = ev.data;
-    if (m.type === 'stateChange') {
-      var prev = connState;
-      setUiState(m.state);
-      if (m.state === 'connected' && prev !== 'connected') {
-        appendLog('info', '\u26a1', 'Connected to ' + m.server);
-      } else if (m.state === 'disconnected' && prev === 'connected') {
-        appendLog('info', '\u2715', 'Disconnected');
-      }
-    } else if (m.type === 'sent') {
-      appendLog('sent', '\u25b6', m.display, '(' + m.bytes + ' bytes)');
-    } else if (m.type === 'received') {
-      var meta = m.responseTime != null
-        ? '(' + m.responseTime + ' ms, ' + m.bytes + ' bytes)'
-        : '(' + m.bytes + ' bytes)';
-      appendLog('recv', '\u25c4', m.display, meta);
-    } else if (m.type === 'error') {
-      setUiState('disconnected');
-      appendLog('err', '\u26a0', m.message);
-    } else if (m.type === 'envelopes') {
-      // The dropdown is server-rendered with built-ins only; no client-side
-      // rebuild needed. (Previously this handler merged in custom envelopes
-      // from settings.json — those are gone in 0.2.1; users edit bytes
-      // directly via the always-visible fields.)
-    } else if (m.type === 'variables') {
-      varsState = { custom: m.custom || [] };
-      renderVars();
-    } else if (m.type === 'persistedMessage') {
-      // Populate the textarea with the last-saved message text on load.
-      // We only honour the reply once; subsequent edits live in
-      // globalState via the persistMessage input handler below.
-      if (!msgEl.value) {
-        msgEl.value = m.message || '';
-      }
-    } else if (m.type === 'syntaxHelp') {
-      helpData.escapes  = m.escapes || [];
-      helpData.builtins = m.builtins || [];
-      helpData.userVars = m.userVars || [];
-      renderEscapeTable();
-      renderVarsTable();
-    }
-  });
-
-  // Persist the message text on every input event. Stored in
-  // extensionContext.globalState on the extension host so it survives
-  // VS Code restarts. Fire-and-forget on the extension side.
-  msgEl.addEventListener('input', function () {
-    vscode.postMessage({ type: 'persistMessage', message: msgEl.value });
-  });
-
-  // Sync state on load (handles panel restore after VS Code restart)
-  vscode.postMessage({ type: 'getState' });
-  // Fetch the current variables state (custom list, format, live timestamp
-  // value) so the Variables section is populated immediately. Envelopes
-  // are server-rendered with built-ins only; no round-trip needed.
-  vscode.postMessage({ type: 'getVariables' });
-})();
-</script>
+<script nonce="${nonce}">window.__TCP_BOOTSTRAP__ = { presets: ${PRESETS_JSON} };</script>
+<script type="module" nonce="${nonce}" src="${mainScriptUri}"></script>
 </body>
-</html>`.replace('__PRESETS_PLACEHOLDER__', JSON.stringify(
-      Object.fromEntries(listBuiltin().map((e) => [e.id, e.spec]))
-    ));
+</html>`;
   }
 }
