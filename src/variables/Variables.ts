@@ -31,7 +31,7 @@ export type VariableDef = {
   value: string;
 };
 
-export const DEFAULT_TIMESTAMP_FORMAT = 'YYYY-MM-DDTHH:mm:ss.sssZ';
+export const DEFAULT_TIMESTAMP_FORMAT = 'YYYYMMDDHHmmss';
 
 // ---------------------------------------------------------------------------
 // Built-in registry

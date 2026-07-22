@@ -79,10 +79,10 @@ suite('Variables – substitute', () => {
     );
   });
 
-  test('{{timestamp}} is replaced with the current ISO 8601 timestamp', () => {
+  test('{{timestamp}} is replaced with the default compact timestamp', () => {
     const vars = listBuiltin();  // [timestamp]
     const result = substitute('at {{timestamp}}', vars, FIXED_NOW);
-    assert.strictEqual(result, 'at 2026-07-05T13:45:23.000Z');
+    assert.strictEqual(result, 'at 20260705134523');
   });
 
   test('{{timestamp}} with a custom format uses that format', async () => {
@@ -193,10 +193,10 @@ suite('MessageEncoder – escape extension (brace escapes)', () => {
 
 suite('formatTimestamp', () => {
 
-  test('default format produces ISO 8601 with milliseconds and Z suffix', () => {
+  test('default format produces compact YYYYMMDDHHmmss', () => {
     assert.strictEqual(
-      formatTimestamp(FIXED_NOW, 'YYYY-MM-DDTHH:mm:ss.sssZ'),
-      '2026-07-05T13:45:23.000Z'
+      formatTimestamp(FIXED_NOW, 'YYYYMMDDHHmmss'),
+      '20260705134523'
     );
   });
 
@@ -208,7 +208,7 @@ suite('formatTimestamp', () => {
     const { messages, restore } = captureWarn();
     try {
       const result = formatTimestamp(FIXED_NOW, 'Q');
-      assert.strictEqual(result, '2026-07-05T13:45:23.000Z');
+      assert.strictEqual(result, '20260705134523');
       assert.ok(
         messages.some((w) => /Unsupported timestamp format token/.test(w)),
         `expected a fallback warning, got: ${JSON.stringify(messages)}`
