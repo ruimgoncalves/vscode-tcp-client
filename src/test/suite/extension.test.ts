@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 suite('Extension', () => {
 
   test('extension is registered', () => {
-    const ext = vscode.extensions.getExtension('local.vscode-tcp-client');
+    const ext = vscode.extensions.getExtension('ruigoncalves.vscode-tcp-client');
     assert.ok(ext, 'Extension should be installed in the test environment');
   });
 

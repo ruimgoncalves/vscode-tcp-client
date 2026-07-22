@@ -50,7 +50,7 @@ Add your own in the Variables section (or directly in `settings.json`):
     { "name": "user.name", "value": "ryu" },
     { "name": "session.id", "value": "abc-123" }
   ],
-  "tcpClient.variables.timestampFormat": "YYYY-MM-DDTHH:mm:ss.sssZ"
+  "tcpClient.variables.timestampFormat": "YYYYMMDDHHmmss"
 }
 ```
 
@@ -98,7 +98,7 @@ All settings live under `tcpClient.*` in `settings.json`:
 | Key | Default | Purpose |
 |---|---|---|
 | `tcpClient.variables.custom` | `[]` | Array of `{name, value}` user-defined variables |
-| `tcpClient.variables.timestampFormat` | `YYYY-MM-DDTHH:mm:ss.sssZ` | Default format for `{{timestamp}}` |
+| `tcpClient.variables.timestampFormat` | `YYYYMMDDHHmmss` | Default format for `{{timestamp}}` |
 | `tcpClient.envelopes.custom` | — | Array of envelope definitions |
 
 ## Keyboard
