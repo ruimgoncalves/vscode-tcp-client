@@ -22,34 +22,34 @@ suite('Envelope builtins – displayable form (regression 2026-07-17)', () => {
       `prefix should be the 4-char string "\\x0B" so the field is readable; got length ${e!.spec.prefix.length}`);
     assert.strictEqual(e!.spec.prefix.length, 4,
       `prefix should have length 4 (the escape sequence); got ${e!.spec.prefix.length}`);
-    assert.strictEqual(e!.spec.suffix, '\\x1C');
-    assert.strictEqual(e!.spec.suffix.length, 4);
+    assert.strictEqual(e!.spec.suffix, '\\x1C\\r');
+    assert.strictEqual(e!.spec.suffix.length, 6);
     assert.strictEqual(e!.spec.lineSuffix, '\\r');
   });
 
-  test('hl7-llp spec also uses the escape form for its FS suffix', () => {
+  test('hl7-llp spec uses the readable escape form for its FS+CR trailer', () => {
     const e = listBuiltin().find((x) => x.id === 'hl7-llp');
     assert.ok(e, 'hl7-llp should be a built-in');
-    assert.strictEqual(e!.spec.suffix, '\\x1C');
-    assert.strictEqual(e!.spec.suffix.length, 4);
+    assert.strictEqual(e!.spec.suffix, '\\x1C\\r');
+    assert.strictEqual(e!.spec.suffix.length, 6);
   });
 
   test('the readable spec still produces the correct wire bytes after wrap()', () => {
     // Even though the field shows the 4-char escape, the host's wrap()
-    // must still produce the right wire bytes (VT 0x0B, FS 0x1C, CR 0x0D).
+    // must still produce the right wire bytes (VT, segment CR, FS, framing CR).
     const e = listBuiltin().find((x) => x.id === 'hl7-mllp')!;
     const out = wrap(Buffer.from('HI'), e.spec);
-    assert.deepStrictEqual([...out], [0x0b, 0x48, 0x49, 0x0d, 0x1c]);
+    assert.deepStrictEqual([...out], [0x0b, 0x48, 0x49, 0x0d, 0x1c, 0x0d]);
   });
 
   test('full hl7-mllp multi-line wire bytes are correct end-to-end', () => {
     const e = listBuiltin().find((x) => x.id === 'hl7-mllp')!;
     const payload = Buffer.from('MSH|^~\\&|...\nPID|||...');
     const out = wrap(payload, e.spec);
-    // 0b, MSH|^~\&|... (12), 0d, PID|||... (9), 0d, 1c
+    // 0b, MSH|^~\&|... (12), 0d, PID|||... (9), 0d, 1c, 0d
     const expected = [0x0b, 0x4d, 0x53, 0x48, 0x7c, 0x5e, 0x7e, 0x5c, 0x26, 0x7c, 0x2e, 0x2e, 0x2e,
                       0x0d, 0x50, 0x49, 0x44, 0x7c, 0x7c, 0x7c, 0x2e, 0x2e, 0x2e,
-                      0x0d, 0x1c];
+                      0x0d, 0x1c, 0x0d];
     assert.deepStrictEqual([...out], expected);
   });
 });

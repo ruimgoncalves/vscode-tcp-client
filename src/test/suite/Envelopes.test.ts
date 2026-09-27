@@ -172,23 +172,23 @@ suite('Envelope – builtins (none / hl7-mllp / hl7-llp)', () => {
     );
   });
 
-  test('hl7-mllp builtin spec has VT prefix, FS suffix, and \\r lineSuffix', () => {
+  test('hl7-mllp builtin spec has VT prefix, FS+CR suffix, and \\r lineSuffix', () => {
     _clearAllForTests();
     _loadBuiltinsForTests();
     const e = listBuiltin().find((x) => x.id === 'hl7-mllp');
     assert.ok(e, 'hl7-mllp should be a built-in');
     assert.strictEqual(e!.spec.prefix, '\\x0B');
-    assert.strictEqual(e!.spec.suffix, '\\x1C');
+    assert.strictEqual(e!.spec.suffix, '\\x1C\\r');
     assert.strictEqual(e!.spec.lineSuffix, '\\r');
   });
 
-  test('hl7-llp builtin spec has FS suffix and \\r lineSuffix (no VT prefix)', () => {
+  test('hl7-llp builtin spec has FS+CR suffix and \\r lineSuffix (no VT prefix)', () => {
     _clearAllForTests();
     _loadBuiltinsForTests();
     const e = listBuiltin().find((x) => x.id === 'hl7-llp');
     assert.ok(e, 'hl7-llp should be a built-in');
     assert.strictEqual(e!.spec.prefix, '');
-    assert.strictEqual(e!.spec.suffix, '\\x1C');
+    assert.strictEqual(e!.spec.suffix, '\\x1C\\r');
     assert.strictEqual(e!.spec.lineSuffix, '\\r');
   });
 });
@@ -208,20 +208,20 @@ suite('Envelope – resolve', () => {
     assert.deepStrictEqual([...out], [0x58, 0x59, 0x5a]);
   });
 
-  test('resolve(hl7-mllp) returns the MLLP envelope with VT/FS framing and \\r segment terminator', () => {
+  test('resolve(hl7-mllp) returns MLLP framing with segment CR before FS+CR trailer', () => {
     const e = resolve('hl7-mllp');
     assert.strictEqual(e.id, 'hl7-mllp');
     const out = wrap(Buffer.from('HI'), e.spec);
-    // VT, payload, CR (lineSuffix), FS (suffix) — no synthetic \n for single-line payloads
-    assert.deepStrictEqual([...out], [VT, 0x48, 0x49, CR, FS]);
+    // VT, payload, segment CR (lineSuffix), FS+CR framing trailer.
+    assert.deepStrictEqual([...out], [VT, 0x48, 0x49, CR, FS, CR]);
   });
 
-  test('resolve(hl7-llp) returns the LLP envelope with FS suffix and \\r segment terminator', () => {
+  test('resolve(hl7-llp) returns LLP framing with segment CR before FS+CR trailer', () => {
     const e = resolve('hl7-llp');
     assert.strictEqual(e.id, 'hl7-llp');
     const out = wrap(Buffer.from('HI'), e.spec);
-    // payload, CR (lineSuffix), FS (suffix) — no leading VT, no synthetic \n
-    assert.deepStrictEqual([...out], [0x48, 0x49, CR, FS]);
+    // Payload, segment CR (lineSuffix), FS+CR framing trailer; no leading VT.
+    assert.deepStrictEqual([...out], [0x48, 0x49, CR, FS, CR]);
   });
 
   test('resolve(does-not-exist) throws', () => {
@@ -244,7 +244,7 @@ suite('Envelope – getAll (built-ins only, no settings source)', () => {
     const mllp = listBuiltin().find((e) => e.id === 'hl7-mllp');
     assert.ok(mllp);
     assert.strictEqual(mllp.spec.prefix, '\\x0B');
-    assert.strictEqual(mllp.spec.suffix, '\\x1C');
+    assert.strictEqual(mllp.spec.suffix, '\\x1C\\r');
     assert.strictEqual(mllp.spec.lineSuffix, '\\r');
   });
 
@@ -257,7 +257,7 @@ suite('Envelope – getAll (built-ins only, no settings source)', () => {
   test('resolve("hl7-mllp") returns the MLLP envelope', () => {
     const e = resolve('hl7-mllp');
     assert.strictEqual(e.spec.prefix, '\\x0B');
-    assert.strictEqual(e.spec.suffix, '\\x1C');
+    assert.strictEqual(e.spec.suffix, '\\x1C\\r');
     assert.strictEqual(e.spec.lineSuffix, '\\r');
   });
 
@@ -366,21 +366,21 @@ suite('Envelope – wrap with linePrefix/lineSuffix', () => {
     );
   });
 
-  test('hl7-mllp with multi-line payload produces \\r-terminated segments and \\x1C suffix', () => {
+  test('hl7-mllp with multi-line payload produces \\r-terminated segments and FS+CR trailer', () => {
     // User-reported regression: typing "MSH|...\nPID|..." in the textarea
     // and sending with the hl7-mllp envelope must produce \r between segments
-    // (not \n), with \x0B at the start and \x1C at the end.
+    // (not LF), with VT at the start and FS+CR at the end.
     const payload = Buffer.from('MSH|^~\\&|...\nPID|||...');
     const out = wrap(payload, spec({
       prefix: '\\x0B',
-      suffix: '\\x1C',
+      suffix: '\\x1C\\r',
       linePrefix: '',
       lineSuffix: '\\r',
     }));
-    // VT, MSH|..., CR, PID|..., CR, FS
+    // VT, MSH|..., segment CR, PID|..., segment CR, FS, framing CR
     // MSH|^~\&|... = 12 bytes  (M S H | ^ ~ \ & | . . .)
     // PID|||...     =  9 bytes  (P I D | | | . . .)
-    // 1 + 12 + 1 + 9 + 1 + 1 = 25 bytes total
+    // 1 + 12 + 1 + 9 + 1 + 2 = 26 bytes total
     assert.deepStrictEqual(
       [...out],
       [0x0B,
@@ -388,7 +388,7 @@ suite('Envelope – wrap with linePrefix/lineSuffix', () => {
        0x0d,
        0x50, 0x49, 0x44, 0x7c, 0x7c, 0x7c, 0x2e, 0x2e, 0x2e,
        0x0d,
-       0x1c]
+       0x1c, 0x0d]
     );
   });
 
@@ -399,17 +399,17 @@ suite('Envelope – wrap with linePrefix/lineSuffix', () => {
     const payload = Buffer.from('MSH|^~\\&|...');
     const out = wrap(payload, spec({
       prefix: '\\x0B',
-      suffix: '\\x1C',
+      suffix: '\\x1C\\r',
       linePrefix: '',
       lineSuffix: '\\r',
     }));
-    // VT, MSH|..., CR, FS
+    // VT, MSH|..., segment CR, FS, framing CR
     assert.deepStrictEqual(
       [...out],
       [0x0B,
        0x4d, 0x53, 0x48, 0x7c, 0x5e, 0x7e, 0x5c, 0x26, 0x7c, 0x2e, 0x2e, 0x2e,
        0x0d,
-       0x1c]
+       0x1c, 0x0d]
     );
   });
 });

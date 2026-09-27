@@ -14,13 +14,14 @@ import {
   maybePrefillHL7Envelopes,
   HL7_PRESETS,
   HL7_PREFILL_FLAG_KEY,
+  HL7_PREFILL_MIGRATION_FLAG_KEY,
 } from '../../envelopes/prefill';
 
 // Minimal ExtensionContext stub — `maybePrefillHL7Envelopes` reads only
 // `globalState.get` and `globalState.update`. The in-memory store below
 // is enough to test the gate + idempotency semantics.
-function makeFakeContext(): vscode.ExtensionContext {
-  const store = new Map<string, unknown>();
+function makeFakeContext(initialState: Record<string, unknown> = {}): vscode.ExtensionContext {
+  const store = new Map<string, unknown>(Object.entries(initialState));
   return {
     globalState: {
       get: <T>(key: string, defaultValue?: T): T | undefined => {
@@ -226,6 +227,9 @@ suite('Prefill – maybePrefillHL7Envelopes', () => {
     await vscode.workspace.getConfiguration('tcpClient').update(
       'envelopes.custom', [], vscode.ConfigurationTarget.Global
     );
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'envelopes.custom', undefined, vscode.ConfigurationTarget.Workspace
+    );
   });
 
   test('first call appends both HL7 presets and sets the flag', async () => {
@@ -241,6 +245,8 @@ suite('Prefill – maybePrefillHL7Envelopes', () => {
       stored.map((e) => e.id).sort(),
       ['hl7-llp-copy', 'hl7-mllp-copy']
     );
+    assert.strictEqual(stored.find((e) => e.id === 'hl7-mllp-copy')!.suffix, '\\x1C\\r');
+    assert.strictEqual(stored.find((e) => e.id === 'hl7-llp-copy')!.suffix, '\\x1C\\r');
     // Flag set:
     assert.strictEqual(ctx.globalState.get(HL7_PREFILL_FLAG_KEY), true);
   });
@@ -273,6 +279,160 @@ suite('Prefill – maybePrefillHL7Envelopes', () => {
     const stored = readCustomEnvelopes();
     assert.strictEqual(stored.length, 2);
     assert.strictEqual(stored.find((e) => e.id === 'hl7-mllp-copy')!.label, 'My custom HL7');
+  });
+  test('migrates exact old HL7 defaults, including their original labels, when v1 is set', async () => {
+    const oldMllp = {
+      id: 'hl7-mllp-copy',
+      label: 'HL7 v2 (MLLP framing) — editable copy',
+      prefix: '\\x0B',
+      suffix: '\\x1C',
+      linePrefix: '',
+      lineSuffix: '\\r',
+      description: 'keep this metadata',
+    };
+    const oldLlp = {
+      id: 'hl7-llp-copy',
+      label: 'HL7 v2 (raw LLP, no VT) — editable copy',
+      prefix: '',
+      suffix: '\\x1C',
+      linePrefix: '',
+      lineSuffix: '\\r',
+    };
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'envelopes.custom', [oldMllp, oldLlp], vscode.ConfigurationTarget.Global
+    );
+    const ctx = makeFakeContext({ [HL7_PREFILL_FLAG_KEY]: true });
+
+    const result = await maybePrefillHL7Envelopes(ctx);
+
+    assert.deepStrictEqual(result, { ran: false, added: 0 });
+    const stored = readCustomEnvelopes();
+    assert.deepStrictEqual(stored, [
+      { ...oldMllp, suffix: '\\x1C\\r' },
+      { ...oldLlp, suffix: '\\x1C\\r' },
+    ]);
+    assert.strictEqual(ctx.globalState.get(HL7_PREFILL_FLAG_KEY), true);
+    assert.strictEqual(ctx.globalState.get(HL7_PREFILL_MIGRATION_FLAG_KEY), true);
+
+    const secondResult = await maybePrefillHL7Envelopes(ctx);
+    assert.deepStrictEqual(secondResult, { ran: false, added: 0 });
+    assert.deepStrictEqual(readCustomEnvelopes(), stored);
+  });
+  test('migrates only global custom envelopes when a workspace override exists', async () => {
+    const oldGlobalMllp = {
+      id: 'hl7-mllp-copy',
+      label: 'HL7 v2 (MLLP framing) — editable copy',
+      prefix: '\\x0B',
+      suffix: '\\x1C',
+      linePrefix: '',
+      lineSuffix: '\\r',
+    };
+    const globalCustom = { id: 'global-custom', label: 'Global custom', suffix: 'global-trailer' };
+    const oldWorkspaceLlp = {
+      id: 'hl7-llp-copy',
+      label: 'HL7 v2 (raw LLP, no VT) — editable copy',
+      prefix: '',
+      suffix: '\\x1C',
+      linePrefix: '',
+      lineSuffix: '\\r',
+    };
+    const workspaceCustom = { id: 'workspace-custom', label: 'Workspace custom', suffix: 'workspace-trailer' };
+    const config = vscode.workspace.getConfiguration('tcpClient');
+    await config.update(
+      'envelopes.custom', [oldGlobalMllp, globalCustom], vscode.ConfigurationTarget.Global
+    );
+    await config.update(
+      'envelopes.custom', [oldWorkspaceLlp, workspaceCustom], vscode.ConfigurationTarget.Workspace
+    );
+    const ctx = makeFakeContext({ [HL7_PREFILL_FLAG_KEY]: true });
+
+    await maybePrefillHL7Envelopes(ctx);
+
+    assert.deepStrictEqual(config.inspect<unknown[]>('envelopes.custom')?.globalValue, [
+      { ...oldGlobalMllp, suffix: '\\x1C\\r' },
+      globalCustom,
+    ]);
+    assert.deepStrictEqual(config.inspect<unknown[]>('envelopes.custom')?.workspaceValue, [
+      oldWorkspaceLlp,
+      workspaceCustom,
+    ]);
+  });
+
+  test('does not migrate old-looking copies whose labels were changed', async () => {
+    const renamedMllp = {
+      id: 'hl7-mllp-copy',
+      label: 'Renamed MLLP copy',
+      prefix: '\\x0B',
+      suffix: '\\x1C',
+      linePrefix: '',
+      lineSuffix: '\\r',
+    };
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'envelopes.custom', [renamedMllp], vscode.ConfigurationTarget.Global
+    );
+    const ctx = makeFakeContext({ [HL7_PREFILL_FLAG_KEY]: true });
+
+    await maybePrefillHL7Envelopes(ctx);
+
+    assert.deepStrictEqual(readCustomEnvelopes(), [renamedMllp]);
+    assert.strictEqual(ctx.globalState.get(HL7_PREFILL_MIGRATION_FLAG_KEY), true);
+  });
+  test('preserves manual old-looking copies when v1 is unset, including subsequent calls', async () => {
+    const manualMllp = {
+      id: 'hl7-mllp-copy',
+      label: 'HL7 v2 (MLLP framing) — editable copy',
+      prefix: '\\x0B',
+      suffix: '\\x1C',
+      linePrefix: '',
+      lineSuffix: '\\r',
+    };
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'envelopes.custom', [manualMllp], vscode.ConfigurationTarget.Global
+    );
+    const ctx = makeFakeContext();
+
+    const firstResult = await maybePrefillHL7Envelopes(ctx);
+
+    assert.deepStrictEqual(firstResult, { ran: true, added: 1 });
+    assert.strictEqual(ctx.globalState.get(HL7_PREFILL_FLAG_KEY), true);
+    assert.strictEqual(ctx.globalState.get(HL7_PREFILL_MIGRATION_FLAG_KEY), true);
+    const afterFirstCall = readCustomEnvelopes();
+    assert.deepStrictEqual(afterFirstCall[0], manualMllp);
+    assert.strictEqual(afterFirstCall.length, 2);
+
+    const secondResult = await maybePrefillHL7Envelopes(ctx);
+    assert.deepStrictEqual(secondResult, { ran: false, added: 0 });
+    assert.deepStrictEqual(readCustomEnvelopes(), afterFirstCall);
+  });
+  test('preserves customized legacy copies and unrelated settings during migration', async () => {
+    const customizedMllp = {
+      id: 'hl7-mllp-copy',
+      label: 'Customized MLLP',
+      prefix: 'custom-prefix',
+      suffix: '\\x1C',
+      linePrefix: '',
+      lineSuffix: '\\r',
+      customSetting: 7,
+    };
+    const customizedLlp = {
+      id: 'hl7-llp-copy',
+      label: 'Customized LLP',
+      prefix: '',
+      suffix: '\\x1C',
+      linePrefix: '',
+      lineSuffix: '\\n',
+    };
+    const unrelated = { id: 'other', label: 'Other', suffix: 'custom-trailer' };
+    const entries = [customizedMllp, customizedLlp, unrelated];
+    await vscode.workspace.getConfiguration('tcpClient').update(
+      'envelopes.custom', entries, vscode.ConfigurationTarget.Global
+    );
+    const ctx = makeFakeContext({ [HL7_PREFILL_FLAG_KEY]: true });
+
+    await maybePrefillHL7Envelopes(ctx);
+
+    assert.deepStrictEqual(readCustomEnvelopes(), entries);
+    assert.strictEqual(ctx.globalState.get(HL7_PREFILL_MIGRATION_FLAG_KEY), true);
   });
 });
 

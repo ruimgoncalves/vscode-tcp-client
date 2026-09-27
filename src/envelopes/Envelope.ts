@@ -294,11 +294,11 @@ export function _loadBuiltinsForTests(): void {
   _registerBuiltin({
     id: 'hl7-mllp',
     label: 'HL7 v2 (MLLP framing)',
-    spec: { prefix: '\\x0B', suffix: '\\x1C', linePrefix: '', lineSuffix: '\\r' },
+    spec: { prefix: '\\x0B', suffix: '\\x1C\\r', linePrefix: '', lineSuffix: '\\r' },
   });
   _registerBuiltin({
     id: 'hl7-llp',
     label: 'HL7 v2 (raw LLP, no VT)',
-    spec: { prefix: '', suffix: '\\x1C', linePrefix: '', lineSuffix: '\\r' },
+    spec: { prefix: '', suffix: '\\x1C\\r', linePrefix: '', lineSuffix: '\\r' },
   });
 }

@@ -4,6 +4,9 @@ import { EnvelopeDef } from './Envelope';
 /** GlobalState key that gates the one-shot HL7 prefill. */
 export const HL7_PREFILL_FLAG_KEY = 'tcpClient.prefilledHL7.v1';
 
+/** Independent one-shot key for correcting untouched legacy prefill copies. */
+export const HL7_PREFILL_MIGRATION_FLAG_KEY = 'tcpClient.migratedHL7Prefill.v1';
+
 /**
  * Built-in HL7 envelopes that get copied into `tcpClient.envelopes.custom`
  * on first activation. Kept in this file (not imported from
@@ -11,9 +14,9 @@ export const HL7_PREFILL_FLAG_KEY = 'tcpClient.prefilledHL7.v1';
  * side effects depend on the registry, and the prefill unit tests can
  * stub `vscode.workspace.getConfiguration` without registering builtins.
  *
- * The shape matches the live HL7 built-ins exactly: VT prefix, FS suffix,
- * `\r` line suffix for both. If the actual built-ins change, this list
- * should be updated to match.
+ * The shape matches the live HL7 built-ins exactly: VT prefix for MLLP,
+ * FS+CR framing trailers, and carriage-return segment terminators. If the
+ * actual built-ins change, this list should be updated to match.
  *
  * IDs use a `-copy` suffix (e.g. `hl7-mllp-copy`) so the prefill entries
  * do NOT shadow the built-in ids. Earlier versions of this prefill wrote
@@ -28,7 +31,7 @@ export const HL7_PRESETS: ReadonlyArray<EnvelopeDef> = [
     id: 'hl7-mllp-copy',
     label: 'HL7 v2 (MLLP framing) — editable copy',
     prefix: '\\x0B',
-    suffix: '\\x1C',
+    suffix: '\\x1C\\r',
     linePrefix: '',
     lineSuffix: '\\r',
   },
@@ -36,7 +39,7 @@ export const HL7_PRESETS: ReadonlyArray<EnvelopeDef> = [
     id: 'hl7-llp-copy',
     label: 'HL7 v2 (raw LLP, no VT) — editable copy',
     prefix: '',
-    suffix: '\\x1C',
+    suffix: '\\x1C\\r',
     linePrefix: '',
     lineSuffix: '\\r',
   },
@@ -57,6 +60,15 @@ function readCustomEnvelopes(): EnvelopeDef[] {
   return raw.filter((e): e is EnvelopeDef => !!e && typeof e === 'object');
 }
 
+/** Reads only the globally configured custom envelopes for global migrations. */
+function readGlobalCustomEnvelopes(): EnvelopeDef[] {
+  const raw = vscode.workspace
+    .getConfiguration('tcpClient')
+    .inspect<unknown>('envelopes.custom')?.globalValue;
+  if (!Array.isArray(raw)) { return []; }
+  return raw.filter((e): e is EnvelopeDef => !!e && typeof e === 'object');
+}
+
 /**
  * Writes the custom-envelopes array back to configuration. Coerces the
  * target to ConfigurationTarget.Global so the prefill is visible across
@@ -72,19 +84,62 @@ async function writeCustomEnvelopes(list: EnvelopeDef[]): Promise<void> {
 }
 
 /**
+ * Corrects only exact old v1-prefill defaults, including their original
+ * labels. The migration is eligible only for installs whose v1 prefill
+ * flag was already set before this call; fresh installs mark it complete
+ * without touching manually-created settings.
+ */
+async function migrateLegacyHL7Prefill(context: vscode.ExtensionContext): Promise<void> {
+  if (context.globalState.get<boolean>(HL7_PREFILL_MIGRATION_FLAG_KEY)) {
+    return;
+  }
+  if (!context.globalState.get<boolean>(HL7_PREFILL_FLAG_KEY)) {
+    await context.globalState.update(HL7_PREFILL_MIGRATION_FLAG_KEY, true);
+    return;
+  }
+
+  const existing = readGlobalCustomEnvelopes();
+  let changed = false;
+  const migrated = existing.map((entry) => {
+    const isOldMllpDefault = entry.id === 'hl7-mllp-copy'
+      && entry.label === 'HL7 v2 (MLLP framing) — editable copy'
+      && entry.prefix === '\\x0B'
+      && entry.suffix === '\\x1C'
+      && entry.linePrefix === ''
+      && entry.lineSuffix === '\\r';
+    const isOldLlpDefault = entry.id === 'hl7-llp-copy'
+      && entry.label === 'HL7 v2 (raw LLP, no VT) — editable copy'
+      && entry.prefix === ''
+      && entry.suffix === '\\x1C'
+      && entry.linePrefix === ''
+      && entry.lineSuffix === '\\r';
+
+    if (!isOldMllpDefault && !isOldLlpDefault) { return entry; }
+    changed = true;
+    return { ...entry, suffix: '\\x1C\\r' };
+  });
+
+  if (changed) {
+    await writeCustomEnvelopes(migrated);
+  }
+  await context.globalState.update(HL7_PREFILL_MIGRATION_FLAG_KEY, true);
+}
+
+/**
  * One-shot HL7 prefill. On first activation, copies the two HL7
  * built-ins into `tcpClient.envelopes.custom` so they appear as
  * editable user presets in the panel dropdown.
  *
- * Idempotent: the `HL7_PREFILL_FLAG_KEY` globalState bit is set after
- * the first run. Subsequent calls return `{ ran: false }` immediately
- * without touching settings. The flag is local to the extension's
- * globalState, so it persists across activations but resets if the
- * user clears the extension's storage.
+ * Idempotent: an independent migration flag corrects only exact untouched
+ * v1 copies, then the `HL7_PREFILL_FLAG_KEY` globalState bit gates the
+ * original one-shot insertion behavior. Subsequent calls return `{ ran: false }`
+ * without changing settings.
  */
 export async function maybePrefillHL7Envelopes(
   context: vscode.ExtensionContext
 ): Promise<{ ran: boolean; added: number }> {
+  await migrateLegacyHL7Prefill(context);
+
   if (context.globalState.get<boolean>(HL7_PREFILL_FLAG_KEY)) {
     return { ran: false, added: 0 };
   }
