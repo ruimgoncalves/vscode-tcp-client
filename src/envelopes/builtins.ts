@@ -16,13 +16,13 @@ _registerBuiltin({
 _registerBuiltin({
   id: 'hl7-mllp',
   label: 'HL7 v2 (MLLP framing)',
-  // VT (0x0B) prefix, FS (0x1C) suffix, per-line \r segment terminator.
-  spec: { prefix: '\\x0B', suffix: '\\x1C', linePrefix: '', lineSuffix: '\\r' },
+  // VT (0x0B) prefix, FS+CR (0x1C 0x0D) trailer, per-line \\r segment terminator.
+  spec: { prefix: '\\x0B', suffix: '\\x1C\\r', linePrefix: '', lineSuffix: '\\r' },
 });
 
 _registerBuiltin({
   id: 'hl7-llp',
   label: 'HL7 v2 (raw LLP, no VT)',
-  // FS suffix only; per-line \r segment terminator; no leading VT.
-  spec: { prefix: '', suffix: '\\x1C', linePrefix: '', lineSuffix: '\\r' },
+  // FS+CR trailer; per-line \\r segment terminator; no leading VT.
+  spec: { prefix: '', suffix: '\\x1C\\r', linePrefix: '', lineSuffix: '\\r' },
 });

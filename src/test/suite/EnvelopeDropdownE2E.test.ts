@@ -12,7 +12,7 @@
 //   1. hl7-mllp spec stores the readable 4-char escape "\x0B" (not the
 //      raw byte 0x0B), so the textarea shows readable text.
 //   2. After applying the preset, the spec round-trips through wrap()
-//      to the correct wire bytes: VT 0x0B, payload, CR 0x0D, FS 0x1C.
+//      to the correct wire bytes: VT 0x0B, payload, segment CR 0x0D, FS 0x1C, framing CR 0x0D.
 //   3. The webview receives the dropdown's `<option>` values matching
 //      the IDs in the built-in list — so a UI selection of "hl7-mllp"
 //      resolves to the same spec.
@@ -45,15 +45,15 @@ suite('Envelope dropdown – end-to-end (regression 2026-07-17)', () => {
     assert.strictEqual(e.spec.prefix, '\\x0B',
       `prefix should be the 4-char string "\\x0B"; got length ${e.spec.prefix.length}`);
     assert.strictEqual(e.spec.prefix.length, 4);
-    assert.strictEqual(e.spec.suffix, '\\x1C');
-    assert.strictEqual(e.spec.suffix.length, 4);
+    assert.strictEqual(e.spec.suffix, '\\x1C\\r');
+    assert.strictEqual(e.spec.suffix.length, 6);
     assert.strictEqual(e.spec.lineSuffix, '\\r');
   });
 
   test('hl7-llp spec is the readable escape form', () => {
     const e = resolve('hl7-llp');
-    assert.strictEqual(e.spec.suffix, '\\x1C');
-    assert.strictEqual(e.spec.suffix.length, 4);
+    assert.strictEqual(e.spec.suffix, '\\x1C\\r');
+    assert.strictEqual(e.spec.suffix.length, 6);
     assert.strictEqual(e.spec.lineSuffix, '\\r');
     assert.strictEqual(e.spec.prefix, '');
   });
@@ -63,8 +63,8 @@ suite('Envelope dropdown – end-to-end (regression 2026-07-17)', () => {
     // send — except we use resolve() (production) instead of any stub.
     const e = resolve('hl7-mllp');
     const out = wrap(Buffer.from('HI'), e.spec);
-    // VT(0x0b), H(0x48), I(0x49), CR(lineSuffix 0x0d), FS(suffix 0x1c)
-    assert.deepStrictEqual([...out], [0x0b, 0x48, 0x49, 0x0d, 0x1c]);
+    // VT(0x0b), H(0x48), I(0x49), segment CR(lineSuffix 0x0d), FS+CR trailer (0x1c 0x0d)
+    assert.deepStrictEqual([...out], [0x0b, 0x48, 0x49, 0x0d, 0x1c, 0x0d]);
   });
 
   test('hl7-mllp wire bytes are correct end-to-end (multi-segment)', () => {
@@ -73,18 +73,18 @@ suite('Envelope dropdown – end-to-end (regression 2026-07-17)', () => {
     const e = resolve('hl7-mllp');
     const payload = Buffer.from('MSH|^~\\&|...\nPID|||...');
     const out = wrap(payload, e.spec);
-    // 0x0b, MSH|^\~\\&|... (12 bytes), 0x0d, PID|||... (9 bytes), 0x0d, 0x1c
+    // 0x0b, MSH|^\~\\&|... (12 bytes), 0x0d, PID|||... (9 bytes), 0x0d, 0x1c, 0x0d
     const expected = [0x0b, 0x4d, 0x53, 0x48, 0x7c, 0x5e, 0x7e, 0x5c, 0x26, 0x7c, 0x2e, 0x2e, 0x2e,
                       0x0d, 0x50, 0x49, 0x44, 0x7c, 0x7c, 0x7c, 0x2e, 0x2e, 0x2e,
-                      0x0d, 0x1c];
+                      0x0d, 0x1c, 0x0d];
     assert.deepStrictEqual([...out], expected);
   });
 
   test('hl7-llp wire bytes are correct (no VT prefix)', () => {
     const e = resolve('hl7-llp');
     const out = wrap(Buffer.from('HI'), e.spec);
-    // No VT: payload, CR, FS
-    assert.deepStrictEqual([...out], [0x48, 0x49, 0x0d, 0x1c]);
+    // No VT: payload, segment CR, FS, framing CR
+    assert.deepStrictEqual([...out], [0x48, 0x49, 0x0d, 0x1c, 0x0d]);
   });
 
   test('preset spec survives a JSON round-trip (webview transport)', () => {

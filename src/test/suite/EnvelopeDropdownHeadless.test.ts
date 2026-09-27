@@ -12,11 +12,11 @@
 //    that programmatically changes the envelope dropdown to 'hl7-mllp',
 //    then reads back the value of envelope-prefix / envelope-suffix /
 //    envelope-lineSuffix inputs.
-// 3. Assert: prefix value is the 4-char string '\x0B', suffix is
-//    '\x1C', lineSuffix is '\r'.
+// 3. Assert: prefix value is the 4-char string '\x0B', suffix ends with
+//    framing FS+CR, lineSuffix remains CR.
 // 4. ALSO: send a 'send' message via _handleWebviewMessage and verify
 //    the wire bytes the host writes to the (stubbed) TcpClient are
-//    [0x0b, payload, 0x0d, 0x1c].
+//    [0x0b, payload, segment 0x0d, framing 0x1c 0x0d].
 
 import * as assert from 'assert';
 import * as vscode from 'vscode';
@@ -116,7 +116,7 @@ suite('Envelope dropdown populates text fields (headless E2E)', function () {
       encoding: 'utf8',
       envelopeId: 'hl7-mllp',
       envelopePrefix: '\\x0B',
-      envelopeSuffix: '\\x1C',
+      envelopeSuffix: '\\x1C\\r',
       envelopeLinePrefix: '',
       envelopeLineSuffix: '\\r',
     });
@@ -124,8 +124,8 @@ suite('Envelope dropdown populates text fields (headless E2E)', function () {
     const stub = (panel as any)._tcpClient as StubTcpClient;
     assert.strictEqual(stub.sent.length, 1, 'expected exactly one send');
     const wire = stub.sent[0];
-    assert.deepStrictEqual([...wire], [0x0b, 0x48, 0x49, 0x0d, 0x1c],
-      `wire bytes should be VT H I CR FS; got ${wire.toString('hex')}`);
+    assert.deepStrictEqual([...wire], [0x0b, 0x48, 0x49, 0x0d, 0x1c, 0x0d],
+      `wire bytes should be VT H I segment-CR FS framing-CR; got ${wire.toString('hex')}`);
   });
 
   test('sending a multi-segment hl7-mllp message produces correct segment separators', async () => {
@@ -136,7 +136,7 @@ suite('Envelope dropdown populates text fields (headless E2E)', function () {
       encoding: 'utf8',
       envelopeId: 'hl7-mllp',
       envelopePrefix: '\\x0B',
-      envelopeSuffix: '\\x1C',
+      envelopeSuffix: '\\x1C\\r',
       envelopeLinePrefix: '',
       envelopeLineSuffix: '\\r',
     });
@@ -144,11 +144,11 @@ suite('Envelope dropdown populates text fields (headless E2E)', function () {
     const stub = (panel as any)._tcpClient as StubTcpClient;
     assert.strictEqual(stub.sent.length, 1);
     const wire = stub.sent[0];
-    // Expected: 0x0b, MSH|^\~\\&|... (12), 0x0d, PID|||... (9), 0x0d, 0x1c
+    // Expected: 0x0b, MSH|^\~\\&|... (12), 0x0d, PID|||... (9), 0x0d, 0x1c, 0x0d
     const expected = Buffer.from([
       0x0b, 0x4d, 0x53, 0x48, 0x7c, 0x5e, 0x7e, 0x5c, 0x26, 0x7c, 0x2e, 0x2e, 0x2e,
       0x0d, 0x50, 0x49, 0x44, 0x7c, 0x7c, 0x7c, 0x2e, 0x2e, 0x2e,
-      0x0d, 0x1c,
+      0x0d, 0x1c, 0x0d,
     ]);
     assert.deepStrictEqual(Buffer.compare(wire, expected), 0,
       `wire bytes mismatch: got ${wire.toString('hex')}, expected ${expected.toString('hex')}`);
