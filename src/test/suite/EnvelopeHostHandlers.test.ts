@@ -232,21 +232,18 @@ suite('Prefill – maybePrefillHL7Envelopes', () => {
     );
   });
 
-  test('first call appends both HL7 presets and sets the flag', async () => {
+  test('first call appends only the editable MLLP preset and sets the flag', async () => {
     await vscode.workspace.getConfiguration('tcpClient').update(
       'envelopes.custom', [], vscode.ConfigurationTarget.Global
     );
     const ctx = makeFakeContext();
     const result = await maybePrefillHL7Envelopes(ctx);
     assert.strictEqual(result.ran, true);
-    assert.strictEqual(result.added, 2);
+    assert.strictEqual(result.added, 1);
     const stored = readCustomEnvelopes();
-    assert.deepStrictEqual(
-      stored.map((e) => e.id).sort(),
-      ['hl7-llp-copy', 'hl7-mllp-copy']
-    );
+    assert.deepStrictEqual(stored.map((e) => e.id), ['hl7-mllp-copy']);
     assert.strictEqual(stored.find((e) => e.id === 'hl7-mllp-copy')!.suffix, '\\x1C\\r');
-    assert.strictEqual(stored.find((e) => e.id === 'hl7-llp-copy')!.suffix, '\\x1C\\r');
+    assert.strictEqual(stored.find((e) => e.id === 'hl7-llp-copy'), undefined);
     // Flag set:
     assert.strictEqual(ctx.globalState.get(HL7_PREFILL_FLAG_KEY), true);
   });
@@ -260,9 +257,9 @@ suite('Prefill – maybePrefillHL7Envelopes', () => {
     const result2 = await maybePrefillHL7Envelopes(ctx);
     assert.strictEqual(result2.ran, false);
     assert.strictEqual(result2.added, 0);
-    // Still exactly two HL7 entries — the second call didn't append a duplicate.
+    // Still exactly one editable HL7 entry — the second call didn't append a duplicate.
     const stored = readCustomEnvelopes();
-    assert.strictEqual(stored.length, 2);
+    assert.strictEqual(stored.length, 1);
   });
 
   test('does not duplicate presets the user already added by hand', async () => {
@@ -274,11 +271,12 @@ suite('Prefill – maybePrefillHL7Envelopes', () => {
     const ctx = makeFakeContext();
     const result = await maybePrefillHL7Envelopes(ctx);
     assert.strictEqual(result.ran, true);
-    // hl7-mllp-copy was already there, hl7-llp-copy is new:
-    assert.strictEqual(result.added, 1);
+    // hl7-mllp-copy was already there, so nothing is added:
+    assert.strictEqual(result.added, 0);
     const stored = readCustomEnvelopes();
-    assert.strictEqual(stored.length, 2);
+    assert.strictEqual(stored.length, 1);
     assert.strictEqual(stored.find((e) => e.id === 'hl7-mllp-copy')!.label, 'My custom HL7');
+    assert.strictEqual(stored.find((e) => e.id === 'hl7-llp-copy'), undefined);
   });
   test('migrates exact old HL7 defaults, including their original labels, when v1 is set', async () => {
     const oldMllp = {
@@ -393,12 +391,12 @@ suite('Prefill – maybePrefillHL7Envelopes', () => {
 
     const firstResult = await maybePrefillHL7Envelopes(ctx);
 
-    assert.deepStrictEqual(firstResult, { ran: true, added: 1 });
+    assert.deepStrictEqual(firstResult, { ran: true, added: 0 });
     assert.strictEqual(ctx.globalState.get(HL7_PREFILL_FLAG_KEY), true);
     assert.strictEqual(ctx.globalState.get(HL7_PREFILL_MIGRATION_FLAG_KEY), true);
     const afterFirstCall = readCustomEnvelopes();
-    assert.deepStrictEqual(afterFirstCall[0], manualMllp);
-    assert.strictEqual(afterFirstCall.length, 2);
+    assert.deepStrictEqual(afterFirstCall, [manualMllp]);
+    assert.strictEqual(afterFirstCall.length, 1);
 
     const secondResult = await maybePrefillHL7Envelopes(ctx);
     assert.deepStrictEqual(secondResult, { ran: false, added: 0 });

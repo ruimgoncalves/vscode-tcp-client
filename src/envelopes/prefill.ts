@@ -8,37 +8,28 @@ export const HL7_PREFILL_FLAG_KEY = 'tcpClient.prefilledHL7.v1';
 export const HL7_PREFILL_MIGRATION_FLAG_KEY = 'tcpClient.migratedHL7Prefill.v1';
 
 /**
- * Built-in HL7 envelopes that get copied into `tcpClient.envelopes.custom`
+ * The editable MLLP HL7 envelope copied into `tcpClient.envelopes.custom`
  * on first activation. Kept in this file (not imported from
  * `builtins.ts`) so the prefill is fully self-contained — no module-load
  * side effects depend on the registry, and the prefill unit tests can
  * stub `vscode.workspace.getConfiguration` without registering builtins.
  *
- * The shape matches the live HL7 built-ins exactly: VT prefix for MLLP,
- * FS+CR framing trailers, and carriage-return segment terminators. If the
- * actual built-ins change, this list should be updated to match.
+ * The shape matches the live MLLP built-in exactly: VT prefix, FS+CR
+ * framing trailer, and carriage-return segment terminators. If the actual
+ * MLLP built-in changes, this list should be updated to match.
  *
- * IDs use a `-copy` suffix (e.g. `hl7-mllp-copy`) so the prefill entries
- * do NOT shadow the built-in ids. Earlier versions of this prefill wrote
- * entries with the same id as built-ins (`hl7-mllp`, `hl7-llp`), which
- * caused the runtime to silently skip them in the dropdown — making them
- * invisible AND undeletable via the panel's Save/Delete UI. The renamed
- * form keeps the "editable copy" UX intent but lets the panel manage
- * the entries normally.
+ * This copy uses a `-copy` suffix (`hl7-mllp-copy`) so it does NOT shadow
+ * the built-in id. Earlier versions of this prefill wrote entries with
+ * built-in ids (`hl7-mllp`, `hl7-llp`), which caused the runtime to
+ * silently skip them in the dropdown — making them invisible AND
+ * undeletable via the panel's Save/Delete UI. The renamed form keeps the
+ * "editable copy" UX intent while letting the panel manage it normally.
  */
 export const HL7_PRESETS: ReadonlyArray<EnvelopeDef> = [
   {
     id: 'hl7-mllp-copy',
     label: 'HL7 v2 (MLLP framing) — editable copy',
     prefix: '\\x0B',
-    suffix: '\\x1C\\r',
-    linePrefix: '',
-    lineSuffix: '\\r',
-  },
-  {
-    id: 'hl7-llp-copy',
-    label: 'HL7 v2 (raw LLP, no VT) — editable copy',
-    prefix: '',
     suffix: '\\x1C\\r',
     linePrefix: '',
     lineSuffix: '\\r',
@@ -126,9 +117,9 @@ async function migrateLegacyHL7Prefill(context: vscode.ExtensionContext): Promis
 }
 
 /**
- * One-shot HL7 prefill. On first activation, copies the two HL7
- * built-ins into `tcpClient.envelopes.custom` so they appear as
- * editable user presets in the panel dropdown.
+ * One-shot HL7 MLLP editable-copy prefill. On first activation, copies the
+ * MLLP built-in into `tcpClient.envelopes.custom` so it appears as an
+ * editable user preset in the panel dropdown.
  *
  * Idempotent: an independent migration flag corrects only exact untouched
  * v1 copies, then the `HL7_PREFILL_FLAG_KEY` globalState bit gates the
@@ -147,9 +138,7 @@ export async function maybePrefillHL7Envelopes(
   const existing = readCustomEnvelopes();
   const existingIds = new Set(existing.map((e) => e.id));
 
-  // Append only the HL7 presets that aren't already present. If the
-  // user already added hl7-mllp-copy / hl7-llp-copy themselves, we
-  // don't duplicate.
+  // Append only the editable MLLP copy if it isn't already present.
   const toAdd = HL7_PRESETS.filter((p) => !existingIds.has(p.id));
   if (toAdd.length > 0) {
     await writeCustomEnvelopes([...existing, ...toAdd]);
