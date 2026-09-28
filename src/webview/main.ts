@@ -267,16 +267,10 @@ declare global {
     }
   }
 
-  // Switching the dropdown auto-fills the fields. We skip the notice if the
-  // user just re-picks the same preset or if the fields already match.
+  // Switching the dropdown auto-fills the fields. Persist the selection.
   envEl.addEventListener('change', () => {
-    const wasModified = !fieldsMatchPreset();
     applyPreset(envEl.value, { notice: true });
-    if (wasModified) {
-      persistPrefs();
-    } else {
-      persistPrefs();
-    }
+    persistPrefs();
   });
 
   // Editing a field toggles its reset button (hidden when equal to preset).

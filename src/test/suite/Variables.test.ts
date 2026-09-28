@@ -617,8 +617,26 @@ suite('TcpPanel – syntax help modal payload', function () {
     }
   });
 
+  test('formatTimestampPreview uses UTC regardless of the host timezone', () => {
+    const previousTimezone = process.env.TZ;
+    try {
+      process.env.TZ = 'America/Los_Angeles';
+      const d = new Date('2024-05-07T09:05:03.042Z');
+      assert.strictEqual(
+        formatTimestampPreview(d, 'YYYY-MM-DD HH:mm:ss.sss'),
+        '2024-05-07 09:05:03.042'
+      );
+    } finally {
+      if (previousTimezone === undefined) {
+        delete process.env.TZ;
+      } else {
+        process.env.TZ = previousTimezone;
+      }
+    }
+  });
+
   test('formatTimestampPreview substitutes YYYY MM DD HH mm ss sss', () => {
-    const d = new Date(2024, 4, 7, 9, 5, 3, 42); // May 7, 2024 09:05:03.042 local
+    const d = new Date('2024-05-07T09:05:03.042Z'); // fixed UTC instant
     assert.strictEqual(formatTimestampPreview(d, 'YYYY-MM-DD'), '2024-05-07');
     assert.strictEqual(formatTimestampPreview(d, 'HH:mm:ss'), '09:05:03');
     assert.strictEqual(formatTimestampPreview(d, 'HH:mm:ss.sss'), '09:05:03.042');
@@ -633,29 +651,28 @@ suite('TcpPanel – syntax help modal payload', function () {
     assert.strictEqual(formatTimestampPreview(d, 'mm:ss.sss'), '05:03.042');
   });
 
-  test('readUserVariables returns an array (gracefully handles missing setting)', () => {
-    // On the vNext base, tcpClient.variables.custom is not a registered
-    // configuration (that schema ships in the v2 variables feature
-    // branch). readUserVariables should not throw and should return an
-    // array — empty when the setting is missing.
+  test('readUserVariables always returns an array', () => {
     const vars = readUserVariables();
     assert.ok(Array.isArray(vars), 'readUserVariables must always return an array');
-    // The contract is "no throw, returns an array". Length may be 0 if
-    // the setting is absent, or > 0 if the user has set it.
   });
 
-  test('readUserVariables filters out malformed entries when setting is an array', () => {
-    // We can't write to tcpClient.variables.custom in this environment
-    // because the schema isn't registered yet (it ships in the v2
-    // variables feature). Instead, exercise the filter logic by
-    // asserting that readUserVariables on a missing/empty setting
-    // produces an empty array (the malformed-entries path is only
-    // reachable once the schema ships).
-    const vars = readUserVariables();
-    assert.ok(Array.isArray(vars));
-    // The filter logic is straightforward; we just verify the function
-    // doesn't crash on whatever configuration state the test
-    // environment has.
+  test('readUserVariables applies the canonical parser to malformed entries', async () => {
+    const config = vscode.workspace.getConfiguration('tcpClient');
+    const malformedEntries = [
+      { name: 'kept', value: 42 },
+      { name: 'missingValue' },
+      { name: '', value: 'empty name is skipped' },
+      null,
+    ] as unknown as Array<{ name: string; value: string }>;
+    await config.update('variables.custom', malformedEntries, vscode.ConfigurationTarget.Global);
+    try {
+      assert.deepStrictEqual(readUserVariables(), [
+        { name: 'kept', value: '' },
+        { name: 'missingValue', value: '' },
+      ]);
+    } finally {
+      await config.update('variables.custom', [], vscode.ConfigurationTarget.Global);
+    }
   });
 
   test('buildSyntaxHelpPayload userVars reflects readUserVariables', () => {

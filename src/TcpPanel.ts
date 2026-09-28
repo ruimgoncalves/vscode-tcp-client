@@ -1,14 +1,15 @@
 import * as vscode from 'vscode';
 import { TcpClient, ConnectionState } from './TcpClient';
 import { encodeMessage, formatBytes, TextEncoding } from './MessageEncoder';
-import { listBuiltin, getAll as getAllEnvelopes, wrap } from './envelopes/Envelope';
-import { envelopePanelFragment } from './envelopes/panelHtml';
+import { getAll as getAllEnvelopes, listBuiltin, wrap } from './envelopes/Envelope';
+import { renderPanelHtml } from './PanelHtml';
 import {
   registerEnvelopeHostHandlers,
   subscribeEnvelopeConfigChanges,
 } from './envelopes/hostHandlers';
 import {
   getAll as getAllVariables,
+  getCustom as getCustomVariables,
   substitute,
   Variable,
   VariableDef,
@@ -50,20 +51,20 @@ export interface UserVariable {
 
 /**
  * Minimal timestamp formatter used for the syntax-help modal's live
- * preview. Supports the tokens YYYY MM DD HH mm ss sss. We don't need
- * timezone-aware formatting here — this is just a quick preview.
+ * preview. Uses UTC to match Variables.formatTimestamp and the help text.
+ * Supports the tokens YYYY MM DD HH mm ss sss.
  */
 export function formatTimestampPreview(date: Date, format: string): string {
   const p2 = (n: number): string => (n < 10 ? '0' + n : '' + n);
   const p3 = (n: number): string => (n < 10 ? '00' + n : n < 100 ? '0' + n : '' + n);
   const tokens: Record<string, string> = {
-    YYYY: '' + date.getFullYear(),
-    MM:   p2(date.getMonth() + 1),
-    DD:   p2(date.getDate()),
-    HH:   p2(date.getHours()),
-    mm:   p2(date.getMinutes()),
-    ss:   p2(date.getSeconds()),
-    sss:  p3(date.getMilliseconds()),
+    YYYY: '' + date.getUTCFullYear(),
+    MM:   p2(date.getUTCMonth() + 1),
+    DD:   p2(date.getUTCDate()),
+    HH:   p2(date.getUTCHours()),
+    mm:   p2(date.getUTCMinutes()),
+    ss:   p2(date.getUTCSeconds()),
+    sss:  p3(date.getUTCMilliseconds()),
   };
   // Order tokens longest-first so `sss` is consumed before `ss`, and
   // `mm` before `m` if we ever add a single-letter token.
@@ -71,23 +72,13 @@ export function formatTimestampPreview(date: Date, format: string): string {
 }
 
 /**
- * Reads the current user-defined variables from configuration. Returns
- * an empty array when the setting is missing or malformed.
+ * Reads user-defined variables through the canonical Variables parser and
+ * strips runtime-only fields for the syntax-help payload. Malformed entries
+ * follow `getCustom()` semantics: empty/invalid names are skipped and a
+ * missing or non-string value is represented as an empty string.
  */
 export function readUserVariables(): UserVariable[] {
-  const cfg = vscode.workspace.getConfiguration('tcpClient');
-  const raw = cfg.get<unknown>('variables.custom');
-  if (!Array.isArray(raw)) { return []; }
-  const out: UserVariable[] = [];
-  for (const entry of raw) {
-    if (entry && typeof entry === 'object' && 'name' in entry && 'value' in entry) {
-      const e = entry as { name: unknown; value: unknown };
-      if (typeof e.name === 'string' && typeof e.value === 'string') {
-        out.push({ name: e.name, value: e.value });
-      }
-    }
-  }
-  return out;
+  return getCustomVariables().map(({ name, value }) => ({ name, value }));
 }
 
 /** Builds the payload returned by the `getSyntaxHelp` handler. Exposed
@@ -124,15 +115,6 @@ export function buildSyntaxHelpPayload(): {
 function getNonce(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   return Array.from({ length: 32 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-}
-
-/** HTML-escape attribute values embedded into the webview template. */
-function escapeHtmlAttr(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
 }
 
 export class TcpPanel {
@@ -407,178 +389,19 @@ export class TcpPanel {
 
   private _getHtmlForWebview(webview: vscode.Webview): string {
     const nonce = getNonce();
-    // Render the envelope options server-side so the dropdown is populated
-    // immediately, even before any async message round-trip. The list
-    // includes built-ins first, then custom envelopes read from
-    // `tcpClient.envelopes.custom` in settings.json. Custom envelopes are
-    // configured via the Settings UI (which renders the array-of-object
-    // schema natively) — no in-panel add/delete dialog needed.
-    //
-    // External edits to `tcpClient.envelopes.custom` while the panel is
-    // open take effect on the next panel open, matching the existing
-    // `variables.custom` behaviour. Inline edits the user makes via the
-    // Settings UI will reflect immediately if they trigger a webview
-    // reload (the standard VS Code Settings UI does).
-    const envelopeOptions = getAllEnvelopes()
-      .map((e) => `<option value="${escapeHtmlAttr(e.id)}">${escapeHtmlAttr(e.label)}</option>`)
-      .join('');
-
-    // External CSS/JS resources shipped via media/panel.css and
-    // out/webview/main.js (compiled from src/webview/main.ts by
-    // tsconfig.webview.json). Resolve them through asWebviewUri() so
-    // VS Code generates the special https://*.vscode-cdn.net URL the
-    // webview can actually fetch (relative paths would 404). See:
-    // https://code.visualstudio.com/api/extension-guides/webview#loading-local-content
+    // Each settings-backed registry is read once for a consistent render.
+    const envelopes = getAllEnvelopes();
+    const builtins = listBuiltin();
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'panel.css'));
     const mainScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'main.js'));
 
-    // Ship the PRESETS map (per-render envelope specs) into the webview
-    // via a tiny nonce-tagged inline bootstrap script. main.js reads
-    // `window.__TCP_BOOTSTRAP__.presets` on load. This is the standard
-    // escape-hatch for sending structured data into an external webview
-    // script while keeping CSP strict (no 'unsafe-inline' on script-src).
-    const PRESETS_JSON = JSON.stringify(
-      Object.fromEntries(getAllEnvelopes().map((e) => [e.id, e.spec]))
-    );
-    // The envelope fields in the UI prefill from the *currently selected*
-    // preset, so the server-rendered HTML shows the right placeholders on
-    // first paint without waiting for a client-side bootstrap round-trip.
-    const initialPreset = listBuiltin().find((e) => e.id === 'none') ?? listBuiltin()[0];
-    const presetPrefix = initialPreset ? initialPreset.spec.prefix : '';
-    const presetSuffix = initialPreset ? initialPreset.spec.suffix : '';
-    const presetLinePrefix = initialPreset ? initialPreset.spec.linePrefix : '';
-    const presetLineSuffix = initialPreset ? initialPreset.spec.lineSuffix : '';
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy"
-  content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TCP Client</title>
-<link rel="stylesheet" href="${styleUri}">
-</head>
-<body>
-
-<div class="header-row">
-  <span class="header-title">TCP Client</span>
-  <button class="sec help-btn" id="helpBtn" title="Syntax help (escape sequences and variables)">?</button>
-</div>
-
-<div class="row">
-  <label for="server">Server</label>
-  <input id="server" type="text" value="localhost:9000" placeholder="host:port" spellcheck="false" autocomplete="off">
-  <div class="dot" id="dot" data-state="disconnected"></div>
-  <button id="connectBtn" data-state="disconnected">Connect</button>
-</div>
-
-<div class="row">
-  <label for="encoding">Encoding</label>
-  <select id="encoding">
-    <option value="utf8">UTF-8</option>
-    <option value="ascii">ASCII</option>
-    <option value="latin1">Latin-1 (ISO-8859-1)</option>
-    <option value="utf16le">UTF-16 LE</option>
-  </select>
-</div>
-
-${envelopePanelFragment({ envelopeOptions })}
-
-<div id="envelope-notice" class="envelope-notice" hidden></div>
-
-<div id="envelope-fields" class="envelope-fields">
-  <div class="env-field">
-    <label for="envelope-prefix">Prefix</label>
-    <div class="env-input-wrap">
-      <input id="envelope-prefix" type="text" spellcheck="false" autocomplete="off"
-             placeholder="${escapeHtmlAttr(presetPrefix)}">
-      <button id="envelope-reset-prefix" class="env-reset" type="button" title="Reset to preset default" tabindex="-1" aria-label="Reset prefix" hidden>↺</button>
-    </div>
-  </div>
-  <div class="env-field">
-    <label for="envelope-suffix">Suffix</label>
-    <div class="env-input-wrap">
-      <input id="envelope-suffix" type="text" spellcheck="false" autocomplete="off"
-             placeholder="${escapeHtmlAttr(presetSuffix)}">
-      <button id="envelope-reset-suffix" class="env-reset" type="button" title="Reset to preset default" tabindex="-1" aria-label="Reset suffix" hidden>↺</button>
-    </div>
-  </div>
-  <div class="env-field">
-    <label for="envelope-linePrefix">Line Prefix</label>
-    <div class="env-input-wrap">
-      <input id="envelope-linePrefix" type="text" spellcheck="false" autocomplete="off"
-             placeholder="${escapeHtmlAttr(presetLinePrefix)}">
-      <button id="envelope-reset-linePrefix" class="env-reset" type="button" title="Reset to preset default" tabindex="-1" aria-label="Reset line prefix" hidden>↺</button>
-    </div>
-  </div>
-  <div class="env-field">
-    <label for="envelope-lineSuffix">Line Suffix</label>
-    <div class="env-input-wrap">
-      <input id="envelope-lineSuffix" type="text" spellcheck="false" autocomplete="off"
-             placeholder="${escapeHtmlAttr(presetLineSuffix)}">
-      <button id="envelope-reset-lineSuffix" class="env-reset" type="button" title="Reset to preset default" tabindex="-1" aria-label="Reset line suffix" hidden>↺</button>
-    </div>
-  </div>
-</div>
-
-<div class="msg-wrap">
-  <div class="row">
-    <span class="sec-label">Message</span>
-  </div>
-  <textarea id="msg" placeholder="Type message... Use {{name}} for your variables, {{timestamp|format}} for time, {{seq}} for sequence, {{uuid}} for unique id."></textarea>
-  <div class="row">
-    <button id="sendBtn" disabled>Send</button>
-  </div>
-</div>
-
-<div class="vars-wrap">
-  <div class="row">
-    <span class="sec-label">Variables</span>
-  </div>
-  <div id="varsBody" class="vars-body"></div>
-  <div class="var-add">
-    <input id="newVarName" class="name" type="text" spellcheck="false" autocomplete="off" placeholder="name">
-    <input id="newVarValue" type="text" spellcheck="false" autocomplete="off" placeholder="value">
-    <button class="sec" id="addVarBtn">Add</button>
-  </div>
-</div>
-
-<div class="log-wrap">
-  <div class="row">
-    <span class="sec-label">Response Log</span>
-    <button class="sec" id="clearBtn">Clear</button>
-  </div>
-  <div id="log"></div>
-</div>
-
-<div id="helpBackdrop" class="modal-backdrop" hidden>
-  <div class="modal" role="dialog" aria-labelledby="helpTitle">
-    <button class="sec modal-close" id="helpCloseBtn" aria-label="Close">&times;</button>
-    <h2 id="helpTitle">Syntax help</h2>
-    <div class="modal-body">
-      <section class="help-section">
-        <h3>Escape sequences</h3>
-        <p class="hint">Click any row to paste it into the message.</p>
-        <table id="escapeTable" class="help-table">
-          <!-- populated by JS from the getSyntaxHelp response -->
-        </table>
-      </section>
-      <section class="help-section">
-        <h3>Variables</h3>
-        <label class="preview-toggle">
-          <input type="checkbox" id="livePreviewToggle"> Show live substitution preview
-        </label>
-        <table id="varsTable" class="help-table">
-          <!-- populated by JS -->
-        </table>
-      </section>
-    </div>
-  </div>
-</div>
-
-<script nonce="${nonce}">window.__TCP_BOOTSTRAP__ = { presets: ${PRESETS_JSON} };</script>
-<script type="module" nonce="${nonce}" src="${mainScriptUri}"></script>
-</body>
-</html>`;
+    return renderPanelHtml({
+      nonce,
+      cspSource: webview.cspSource,
+      styleUri: styleUri.toString(),
+      mainScriptUri: mainScriptUri.toString(),
+      envelopes,
+      builtins,
+    });
   }
 }

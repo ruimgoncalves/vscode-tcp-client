@@ -1,10 +1,9 @@
 /**
  * HTML fragment for the envelope row + Save/Delete dialogs.
  *
- * Embedded into the panel HTML by `TcpPanel._getHtmlForWebview` via the
- * `${envelopePanelFragment(...)}` template-literal interpolation. Lives
- * in its own file so the markup + dialog structure can evolve without
- * touching the 1400-line `TcpPanel.ts` template.
+ * Embedded into the panel HTML by `renderPanelHtml` via template-literal
+ * interpolation. Lives in its own file so the envelope row + dialog
+ * structure can evolve independently from the main panel renderer.
  *
  * The IDs (`#envelope-save-btn`, `#savePresetDialog`, etc.) are the
  * canonical contract with `out/webview/main.js` (the Save/Delete button
@@ -17,7 +16,7 @@
  * `scripts/check-webview-js.js` guard.
  *
  * The function takes `envelopeOptions` (the rendered <option> tags,
- * already HTML-escaped by the caller) as a parameter rather than
+ * already HTML-escaped by `renderPanelHtml`) as a parameter rather than
  * interpolating it inside this string constant. The reason: a string
  * constant exported as a module is already a fully-resolved string at
  * module load, so a `${envelopeOptions}` inside it would render as
