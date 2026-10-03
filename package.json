@@ -45,7 +45,7 @@
         "tcpClient.variables.timestampFormat": {
           "type": "string",
           "default": "YYYYMMDDHHmmss",
-          "markdownDescription": "Format pattern for the built-in `{{timestamp}}` variable. Supports `YYYY` (year), `MM` (month), `DD` (day), `HH` (hour), `mm` (minute), `ss` (second), `sss` (millisecond), and `Z` (UTC marker). Other characters are treated as literals. Default: compact `YYYYMMDDHHmmss`."
+          "markdownDescription": "Format pattern for the built-in `{{timestamp}}` variable. Supports `YYYY` (year), `MM` (month), `DD` (day), `HH` (hour), `mm` (minute), `ss` (second), `sss` (millisecond), `Z` (UTC marker), `X` (Unix epoch seconds), and `x` (Unix epoch milliseconds). Other supported characters are treated as literals. Default: compact `YYYYMMDDHHmmss`."
         },
         "tcpClient.envelopes.custom": {
           "type": "array",

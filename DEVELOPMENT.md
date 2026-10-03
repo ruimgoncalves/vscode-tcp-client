@@ -19,17 +19,17 @@ Just enter `host:port` and hit Connect. The status dot tells you everything at a
 - Press **Ctrl+Enter** to send without touching the mouse
 
 ### 📋 Response Log
-Every response is logged with a **timestamp** and **response time in milliseconds** — useful for benchmarking or spotting timeouts.
+Sent and received data is logged with a **timestamp** and byte count. The first received data chunk after a send also shows the elapsed time in milliseconds. TCP is a byte stream, so received chunks are not necessarily complete application-level responses.
 
 ### 💾 Remembers Your State
-Server address, encoding, and draft message are **automatically saved** between sessions. Close the panel, reopen VS Code — your context is still there.
+The draft message is **saved across panel closure and VS Code restarts**. Server address, encoding, and envelope preferences are retained only while the panel remains open in the current VS Code session; closing the panel or restarting VS Code clears them.
 
 ---
 
 ## Install
 
-### From the VS Code Marketplace *(coming soon)*
-Search for **"TCP Client"** in the Extensions view and click Install.
+### From the VS Code Marketplace
+Install [TCP Client from the Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=ruigoncalves.vscode-tcp-client), or search for **"TCP Client"** in the Extensions view.
 
 ### From a `.vsix` package
 Download the latest `.vsix` from the [Releases](https://github.com/ruimgoncalves/vscode-tcp-client/releases) page, then:
@@ -58,6 +58,8 @@ npm run compile
 
 | Sequence | Meaning |
 |----------|---------|
+| `\{`    | Literal `{` |
+| `\}`    | Literal `}` |
 | `\xHH`   | Raw byte (e.g. `\xFF`) |
 | `\n`     | Newline (0x0A) |
 | `\r`     | Carriage return (0x0D) |
@@ -84,7 +86,9 @@ The extension is intentionally small. The key files:
   and triggers built-in envelope registration
 - `src/TcpClient.ts` — thin `net.Socket` wrapper, `EventEmitter`-based
 - `src/TcpPanel.ts` — VS Code webview panel, owns a `TcpClient` and a
-  webview; renders the HTML
+  webview; wires host-side messaging and delegates HTML rendering
+- `src/PanelHtml.ts` — renders the webview document and embeds the envelope
+  controls from `src/envelopes/panelHtml.ts`
 - `src/MessageEncoder.ts` — escape-sequence parser used for both message
   payloads and envelope prefix/suffix strings
 - `src/envelopes/Envelope.ts` — envelope registry, `wrap()` function, and
@@ -105,7 +109,7 @@ The extension is intentionally small. The key files:
    same syntax as the message area (`\xHH`, `\n`, `\r`, `\t`, `\\`, `\0`).
 2. Add a test case in `src/test/suite/Envelopes.test.ts` to confirm the
    framing bytes are correct.
-3. Update the built-ins table in `README.md`.
+3. Update the built-in envelopes list in the **Envelopes** section of `README.md`.
 
 ### Wrap modes
 
@@ -136,9 +140,10 @@ inside `wrap()`.
 When at least one is non-empty, `wrap()` splits the payload on `\n` (a
 single byte 0x0A) and emits `linePrefix + line + lineSuffix` for each
 line, including empty lines from leading, trailing, or consecutive
-newlines. Consecutive lines are rejoined with a single `\n` byte. The
-whole per-line result is then wrapped with the outer `prefix` and
-`suffix`.
+newlines. The input newline bytes are consumed; no separator is inserted
+between wrapped lines. Use `lineSuffix` when the protocol needs a
+per-line terminator. The whole per-line result is then wrapped with the
+outer `prefix` and `suffix`.
 
 Example (NRPE-style STX/ETX per line with a `>` line marker):
 
@@ -157,12 +162,12 @@ Example (NRPE-style STX/ETX per line with a `>` line marker):
 }
 ```
 
-A payload of `LOAD\nCPU\nMEM` produces (STX wraps the whole
-message, then per-line `> ... <`, lines rejoined with single `\n`, then
-ETX at the end):
+A payload of `LOAD\nCPU\nMEM` produces the following bytes. The input
+newlines are consumed, so there is no separator between the per-line
+wrapped pieces:
 
 ```
-\x02 >LOAD< \n >CPU< \n >MEM< \x03
+\x02>LOAD<>CPU<>MEM<\x03
 ```
 
 Use `linePrefix` / `lineSuffix` when:
@@ -184,11 +189,12 @@ syntax as `prefix` / `suffix` (e.g. `\x02`, `\n`, `\r`).
 ### Custom envelopes
 
 Custom envelopes are read from `vscode.workspace.getConfiguration('tcpClient')
-.get('envelopes.custom')` at panel creation time. The schema is declared in
+.get('envelopes.custom')` when the panel is created and whenever the setting
+changes while the panel is open. The schema is declared in
 `package.json` under `contributes.configuration` and is therefore editable
 via VS Code's Settings UI as well as `settings.json`. Adding a new custom
 envelope requires no code changes. External edits to the setting take
-effect on the next panel open, matching the `variables.custom` behaviour.
+effect immediately in the open panel's dropdown.
 
 Every custom envelope accepts the full `EnvelopeSpec` shape: `prefix`,
 `suffix`, plus the optional per-line fields
@@ -230,17 +236,11 @@ the next message — no re-registration needed.
 
 #### Escape interaction
 
-The `MessageEncoder` adds `\{` and `\}` as literal-brace escapes. This
-lets the user send a literal `{{name}}` in the message text by writing
-`\{\{name\}\}` — the encoder converts each `\{` to a literal `{` byte,
-so substitute sees the text `{{name}}` and (assuming no `name`
-variable is defined) leaves it as-is.
-
-The substitute regex doesn't see the user's escape syntax — it only
-sees the post-encoded string. So `\{\{name\}\}` after encode becomes
-`{{name}}`, which substitute treats as a reference (and falls through
-unchanged if unknown). The escape mechanism and the substitution
-mechanism layer cleanly.
+The send pipeline is substitution first, then escape-sequence encoding.
+Writing `\{\{name\}\}` keeps the braces separated by backslashes while
+the substitution regex runs, so it is not treated as a variable reference.
+The encoder then converts each `\{` and `\}` to literal braces. This
+sends the literal text `{{name}}`, even when `name` is defined.
 
 #### seq counter
 
@@ -259,10 +259,11 @@ counters. Closing the panel and reopening resets the counter to 1
 
 The webview's draft message is persisted via
 `extensionContext.globalState` (per VS Code install), not
-`vscode.setState`. `setState` is webview-scoped and dies with the
-webview context on VS Code restart; `globalState` survives. Other
-fields (server, encoding, envelope) stay on `setState` since they
-are session preferences, not draft content.
+`vscode.setState`. `globalState` survives panel closure and VS Code
+restarts. Other fields (server, encoding, envelope selection, and
+envelope-field overrides) stay on `setState`. That state survives
+hiding/showing the same webview during the current VS Code session, but
+not panel disposal or VS Code restarts.
 
 When the panel opens, it asks the extension for the persisted
 message via a `getPersistedMessage` postMessage and restores the

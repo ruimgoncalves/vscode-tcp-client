@@ -1,112 +1,89 @@
 # TCP Client for VS Code
 
-Talk to any TCP server from inside VS Code. Send text or binary, frame with HL7 or custom envelopes, interpolate variables.
+Connect to any TCP server, send text or binary messages, and inspect the data received—all without leaving VS Code.
 
 ![TCP Client in action](https://github.com/ruimgoncalves/vscode-tcp-client/raw/main/screenshot.png)
 
-## Quick Start
+## Quick start
 
-1. Open the Command Palette → **TCP Client: Open Panel**
-2. Enter `host:port` and click **Connect**
-3. Pick an **Envelope** (default: *None / raw*)
-4. Type your message — use escape sequences for binary, `{{name}}` for variables
-5. Press **Send** or `Ctrl+Enter`. Click the yellow **?** for syntax help.
+1. Run **TCP Client: Open Panel** from the Command Palette.
+2. Enter a `host:port` address and click **Connect**.
+3. Choose an envelope and encoding, then enter a message.
+4. Click **Send** or press `Ctrl+Enter`. Use **?** for syntax help.
 
-Connection state is shown by a status dot (grey / amber / green). Every response is logged with a timestamp and round-trip time in ms. Form state survives panel close and VS Code restarts.
+The panel includes built-in HL7 envelopes, custom presets, message variables, and a send/receive log. The status dot shows connection state (grey: disconnected, amber: connecting, green: connected). Log entries include timestamps and byte counts; the first received TCP data chunk after a send also shows elapsed time in milliseconds. TCP chunks are not necessarily complete application responses.
 
-## Message Syntax
+Choose UTF-8, ASCII, Latin-1, or UTF-16 LE for outgoing text. The draft message persists across panel closure and VS Code restarts. Connection, encoding, and envelope preferences last only while the panel remains open.
 
-### Escape sequences
+## Message syntax
+
+Escape sequences let you include binary bytes in a message:
 
 | Sequence | Meaning |
 |---|---|
-| `\xHH` | Raw byte (e.g. `\xFF`) |
-| `\n`   | Newline (0x0A) |
-| `\r`   | Carriage return (0x0D) |
-| `\t`   | Tab (0x09) |
-| `\\`   | Literal backslash |
-| `\0`   | Null byte (0x00) |
-| `\{`   | Literal `{` |
-| `\}`   | Literal `}` |
+| `\xHH` | Raw byte, e.g. `\xFF` |
+| `\n` | Newline (0x0A) |
+| `\r` | Carriage return (0x0D) |
+| `\t` | Tab (0x09) |
+| `\\` | Literal backslash |
+| `\0` | Null byte (0x00) |
+| `\{` `\}` | Literal braces; use `\{\{name\}\}` to send `{{name}}`, even if `name` is defined |
 
-Use `\{` and `\}` to send literal `{{name}}` in a message.
+Insert variables with `{{name}}`:
 
-### Variables
-
-Reference `{{name}}` in the message area. The text is resolved before encoding and framing.
-
-| Variable | Value |
+| Variable | Description |
 |---|---|
-| `{{timestamp}}` | Current UTC time, default format from settings |
-| `{{timestamp|FORMAT}}` | Same, with FORMAT applied (`YYYY`, `MM`, `DD`, `HH`, `mm`, `ss`, `sss`, `Z`, `X` = epoch seconds, `x` = epoch ms) |
-| `{{seq}}` | Per-session counter, starts at 1 |
-| `{{uuid}}` | Fresh RFC 4122 v4 UUID |
+| `{{timestamp}}` | Current UTC time |
+| `{{timestamp|FORMAT}}` | UTC time using `YYYY` (year), `MM` (month), `DD` (day), `HH` (hour), `mm` (minute), `ss` (second), `sss` (milliseconds), `Z` (UTC marker), `X` (epoch seconds), or `x` (epoch milliseconds) |
+| `{{seq}}` | Per-panel counter, starting at 1 |
+| `{{uuid}}` | New UUID v4 |
+| `{{your.name}}` | A custom variable you add in the panel or settings |
 
-Add your own in the Variables section (or directly in `settings.json`):
+Add custom variables in the panel or in `settings.json`:
 
 ```json
 {
   "tcpClient.variables.custom": [
-    { "name": "user.name", "value": "ryu" },
-    { "name": "session.id", "value": "abc-123" }
+    { "name": "user.name", "value": "Rui" }
   ],
   "tcpClient.variables.timestampFormat": "YYYYMMDDHHmmss"
 }
 ```
 
-Unknown `{{name}}` references are left in the output and a warning is logged to the developer console — the send is not blocked. The pipe in `{{name|anything}}` is silently ignored for `seq`, `uuid`, and user variables.
+Unknown variables are sent unchanged and logged as a developer-console warning. A `|FORMAT` suffix only formats `timestamp`; it is ignored for `seq`, `uuid`, and custom variables.
 
 ## Envelopes
 
-An envelope wraps your message with prefix/suffix bytes before it's written to the socket — useful for HL7 v2 / MLLP, NRPE-style line framing, and any protocol with a well-known start/end marker.
+Choose **None (raw)**, **HL7 v2 (MLLP framing)**, or **HL7 v2 (raw LLP, no VT)**, or create a custom preset. Prefix/suffix bytes wrap the whole message. Optional line-prefix/line-suffix bytes wrap each newline-separated line inside that outer framing. Input newlines are consumed (no separator is added); set a line suffix if the protocol needs one. Empty lines, including a trailing empty line, are wrapped too.
 
-Pick one from the dropdown, or define your own:
+Edit all four fields in the panel. Framing fields use the same escape sequences as messages. Use **+ Save preset** to save the current values or **Delete** to remove a custom preset. You can also configure presets in `settings.json`; each requires a unique `id` and a `label` shown in the dropdown, while framing fields are optional:
 
 ```json
 {
   "tcpClient.envelopes.custom": [
-    {
-      "id": "stx-etx",
-      "label": "STX/ETX framed",
-      "prefix": "\\x02",
-      "suffix": "\\x03"
-    },
-    {
-      "id": "stx-etx-line",
-      "label": "STX/ETX per line",
-      "prefix": "\\x02",
-      "suffix": "\\x03",
-      "linePrefix": ">",
-      "lineSuffix": "<"
-    }
+    { "id": "stx-etx", "label": "STX/ETX", "prefix": "\\x02", "suffix": "\\x03" },
+    { "id": "marked-lines", "label": "Marked lines", "linePrefix": ">", "lineSuffix": "\\r" }
   ]
 }
 ```
 
-Fields:
-- `id` *(required)* — unique identifier
-- `label` *(required)* — shown in the dropdown
-- `prefix` / `suffix` — bytes prepended / appended (escape-sequence string)
-- `linePrefix` / `lineSuffix` — wrap each `\n`-separated line of the payload (for protocols that frame every line). Default empty — leave both empty for single-wrap behaviour.
-
-When you select a custom envelope in the panel, its `prefix`, `suffix`, `linePrefix`, and `lineSuffix` are exposed as inline fields so you can tweak them without editing `settings.json`.
-
 ## Settings
 
-All settings live under `tcpClient.*` in `settings.json`:
+Settings use the `tcpClient.*` namespace:
 
-| Key | Default | Purpose |
+| Setting | Default | Description |
 |---|---|---|
-| `tcpClient.variables.custom` | `[]` | Array of `{name, value}` user-defined variables |
+| `tcpClient.connection.timeoutMs` | `10000` | Connect timeout in ms; set to `0` to disable |
+| `tcpClient.variables.custom` | `[]` | User-defined `{name, value}` variables |
 | `tcpClient.variables.timestampFormat` | `YYYYMMDDHHmmss` | Default format for `{{timestamp}}` |
-| `tcpClient.envelopes.custom` | — | Array of envelope definitions |
+| `tcpClient.envelopes.custom` | `[]` | Custom envelope presets |
 
 ## Keyboard
 
 | Shortcut | Action |
 |---|---|
 | `Ctrl+Enter` | Send the current message |
-| `Escape` | Close the syntax help modal |
+| `Escape` | Close syntax help |
 
 ## License
 
